@@ -129,15 +129,15 @@
   .group .acts label { font-size: 11px; color: #9aa0a6; display: flex; align-items: center; gap: 4px; }
 
   /* 定位确认浮层 */
-  #locate { position: fixed; inset: 0; z-index: 9000; background: rgba(8, 10, 13, .72);
-            display: flex; align-items: center; justify-content: center; }
+  /* 定位浮层不再自带地图：直接在下面的主地图上拖动标记，这里只是底部工具栏 */
+  #locate { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9000;
+            display: flex; justify-content: center; padding: 0 12px 12px;
+            pointer-events: none; }
   #locate[hidden] { display: none; }
-  /* 面板几乎铺满窗口：确认位置时要像看主地图一样大，
-     否则拖着标记找地方很费劲 */
-  #locate .panel { width: 96vw; height: 94vh; max-width: none; max-height: none;
-                   display: flex; flex-direction: column;
-                   background: #151a20; border: 1px solid #2f3740;
-                   border-radius: 8px; overflow: hidden; }
+  #locate .panel { pointer-events: auto; width: min(760px, 96vw); max-height: 70vh;
+                   display: flex; flex-direction: column; overflow: auto;
+                   background: rgba(21, 26, 32, .97); border: 1px solid #2f3740;
+                   border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45); }
   #locate .head, #locate .search, #locate .cands, #locate .foot { flex: none; }
   #locate .head { padding: 12px 16px; font-size: 14px; font-weight: 600;
                   border-bottom: 1px solid #262b31; }
@@ -151,9 +151,7 @@
                            background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
                            border-radius: 4px; cursor: pointer; }
   #locate .search button:hover { background: #262e37; }
-  #locate-map { flex: 1 1 auto; min-height: 200px; background: #1a1f24; }
-  .pm-locate-pin { width: 18px; height: 18px; border-radius: 50%; background: #6ea8fe;
-                   border: 2px solid #fff; box-shadow: 0 0 0 7px rgba(110, 168, 254, .25); }
+  #locate-map { display: none; }
   #locate .cands { padding: 10px 16px; font-size: 12px; color: #9aa0a6;
                    border-top: 1px solid #262b31; max-height: 130px; overflow-y: auto; }
   #locate .cands button { display: block; width: 100%; text-align: left; margin-bottom: 4px;
@@ -1266,14 +1264,15 @@ function loadBaiduApi(ak) {
    优先百度地图（有 AK 时自带地址搜索），没有 AK 就用高德瓦片：
    基准 GCJ-02，境内数据比 OSM 详细得多。 */
 async function prepareOverlay() {
-  overlayEngine = 'gcj02';
+  /* 就地编辑，坐标基准跟着主地图走（Google 不同图层基准还不一样） */
+  const view = await askMapView();
+  overlayEngine = (view && view.system) ? view.system : 'gcj02';
   bmapReady = false;
   const ak = engineKey('baidu');
   if (ak) {
     try {
       await loadBaiduApi(ak);
       bmapReady = true;
-      overlayEngine = 'bd09';
     } catch (err) {
       bmapReady = false;
     }
@@ -1352,8 +1351,6 @@ async function openLocate(key) {
   setPoint(point.lat, point.lon);
 
   /* 拖动事件在各家 SDK 里不一定可靠，定时比对一下位置 */
-  if (locatePoll) clearInterval(locatePoll);
-  locatePoll = setInterval(checkMoved, 400);
 }
 
 /* 胶卷里多选的任意几张照片：一次性打开浮层，确认后整批钉到同一个点。 */
@@ -1428,8 +1425,6 @@ async function openLocateMany(keys) {
   buildOverlayMap(point);
   setPoint(point.lat, point.lon);
 
-  if (locatePoll) clearInterval(locatePoll);
-  locatePoll = setInterval(checkMoved, 400);
 }
 
 /* 改一整簇：浮层只负责挑一个点，写入由批量接口做。 */async function openGroupPoint(group, mode) {
@@ -1477,85 +1472,38 @@ async function openLocateMany(keys) {
   buildOverlayMap(point);
   setPoint(point.lat, point.lon);
 
-  if (locatePoll) clearInterval(locatePoll);
-  locatePoll = setInterval(checkMoved, 400);
 }
+
+function postToFrame(message) {
+  if (!frame.contentWindow) return;
+  frame.contentWindow.postMessage(message, window.location.origin);
+}
+
+/* 浮层不自带地图了：在主地图（iframe）里放一个可拖动的标记，
+   这里只维护「当前点」，把 setPoint 转成消息发过去。 */
+let editPoint = { lat: 0, lon: 0 };
 
 function buildOverlayMap(point) {
   if (locateMap) { destroyOverlayMap(); }
-  locateMapEl.innerHTML = '';
-  if (bmapReady) {
-    const map = new BMap.Map(locateMapEl);
-    map.enableScrollWheelZoom(true);
-    const marker = new BMap.Marker(new BMap.Point(point.lon, point.lat));
-    map.addOverlay(marker);
-    marker.enableDragging();
-    locateMap = {
-      engine: 'bd09',
-      setPoint: function (lat, lon) {
-        marker.setPosition(new BMap.Point(lon, lat));
-        map.panTo(new BMap.Point(lon, lat));
-      },
-      getPoint: function () {
-        const p = marker.getPosition();
-        return { lat: p.lat, lon: p.lng };
-      },
-      search: searchBaidu,
-      destroy: function () { map.clearOverlays(); }
-    };
-  } else {
-    /* 没有百度 AK：底图用高德瓦片（GCJ-02），地址搜索用 Nominatim／Photon
-       （返回 WGS-84，落点前先偏移一次，两边才对得上）。 */
-    const map = L.map(locateMapEl).setView([point.lat, point.lon], 15);
-    const baseLayers = {};
-    AMAP_TILES.forEach(function (t) {
-      /* 混合层是两层瓦片：卫星影像 + 透明的路网标注 */
-      const parts = [L.tileLayer(t.url, {
-        maxZoom: t.maxZoom || 18,
-        attribution: t.attribution || '',
-        subdomains: t.subdomains || 'abc'
-      })];
-      if (t.overlay) {
-        parts.push(L.tileLayer(t.overlay.url, {
-          maxZoom: t.overlay.maxZoom || t.maxZoom || 18,
-          attribution: '',
-          subdomains: t.overlay.subdomains || 'abc'
-        }));
-      }
-      baseLayers[t.name] = parts.length > 1 ? L.layerGroup(parts) : parts[0];
-    });
-    const names = Object.keys(baseLayers);
-    if (names.length) {
-      baseLayers[names[0]].addTo(map);
-      if (names.length > 1) L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
-    }
-    /* 自绘一个圆点标记：Leaflet 默认图标依赖 vendor 里的 png，
-       打包/复制时容易缺，用 divIcon 最稳 */
-    const pinIcon = L.divIcon({
-      className: 'pm-locate-pin',
-      iconSize: [18, 18],
-      iconAnchor: [9, 9]
-    });
-    const marker = L.marker([point.lat, point.lon], { draggable: true, icon: pinIcon }).addTo(map);
-    locateMap = {
-      engine: 'gcj02',
-      setPoint: function (lat, lon) {
-        marker.setLatLng([lat, lon]);
-        map.setView([lat, lon], Math.max(map.getZoom(), 15));
-      },
-      getPoint: function () { return { lat: marker.getLatLng().lat, lon: marker.getLatLng().lng }; },
-      invalidateSize: function () { map.invalidateSize(); },
-      search: searchOsm,
-      destroy: function () { map.remove(); }
-    };
-  }
-  setTimeout(function () {
-    if (locateMap && locateMap.invalidateSize) locateMap.invalidateSize();
-  }, 40);
+  locateInitial = { lat: point.lat, lon: point.lon };
+  editPoint = { lat: point.lat, lon: point.lon };
+  locateMap = {
+    engine: overlayEngine,
+    setPoint: function (lat, lon) {
+      editPoint = { lat: lat, lon: lon };
+      postToFrame({ type: 'photonmap:edit-move', lat: lat, lon: lon });
+    },
+    getPoint: function () { return editPoint; },
+    search: (overlayEngine === 'bd09' && bmapReady) ? searchBaidu : searchOsm,
+    destroy: function () { postToFrame({ type: 'photonmap:edit-end' }); }
+  };
+  /* 面板盖在底部，把地图中心往上让一点，免得标记被面板挡住 */
+  const panel = document.querySelector('#locate .panel');
+  const pan = panel ? Math.round(panel.getBoundingClientRect().height / 2) : 0;
+  postToFrame({ type: 'photonmap:edit-start', lat: point.lat, lon: point.lon, pan: pan });
 }
 
 function destroyOverlayMap() {
-  if (locatePoll) { clearInterval(locatePoll); locatePoll = null; }
   if (locateMap) { try { locateMap.destroy(); } catch (e) {} locateMap = null; }
   locateInitial = null;
 }
@@ -1573,14 +1521,12 @@ function showCoord(lat, lon) {
     '（' + (labels[overlayEngine] || overlayEngine) + '）';
 }
 
-function checkMoved() {
-  if (!locateMap || !locateInitial) return;
-  const now = locateMap.getPoint();
-  if (Math.abs(now.lat - locateInitial.lat) > 1e-9 ||
-      Math.abs(now.lon - locateInitial.lon) > 1e-9) {
-    locateInitial = { lat: now.lat, lon: now.lon };
-    showCoord(now.lat, now.lon);
-  }
+/* iframe 里拖动标记 → 同步回面板上的坐标 */
+function applyEditPoint(lat, lon, system) {
+  if (system) overlayEngine = system;
+  editPoint = { lat: lat, lon: lon };
+  locateInitial = { lat: lat, lon: lon };
+  if (!overlayEl.hidden) showCoord(lat, lon);
 }
 
 /* 百度地址搜索 */
@@ -1817,6 +1763,10 @@ window.addEventListener('message', function (event) {
   if (!frame.contentWindow || event.source !== frame.contentWindow) return;
   const data = event.data;
   if (!data) return;
+  if (data.type === 'photonmap:edit-point') {
+    applyEditPoint(data.lat, data.lon, data.system);
+    return;
+  }
   if (data.type === 'photonmap:view' && viewRequestResolve) {
     const resolve = viewRequestResolve;
     viewRequestResolve = null;

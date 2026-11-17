@@ -40,6 +40,9 @@
 <script src="{{ asset_prefix }}/photo_map.js"></script>
 <script>
 const LIVE = {{ options.live|tojson }};
+/* 发给父页面的目标 origin：静态导出走 file:// 时只能 '*' */
+const PARENT_ORIGIN = (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+  ? window.location.origin : '*';
 let PHOTOS = {{ photos|tojson }};
 const PENDING = {{ (pending or [])|tojson }};
 const COORD_LABEL = {{ coord_label|tojson }};
@@ -198,7 +201,7 @@ const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
 const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
   onSelect: function (photoIndex, photo) {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, window.location.origin);
+      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, PARENT_ORIGIN);
     }
   }
 });

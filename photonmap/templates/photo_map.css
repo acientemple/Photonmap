@@ -444,3 +444,13 @@ body.pm-hide-markers .BMap_Label { display: none !important; }
 }
 .pm-tool:hover { background: #262e37; }
 .pm-tool-on { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
+
+/* 就地改位置时地图上的圆点标记（iframe 里也要有样式） */
+.pm-locate-pin {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #6ea8fe;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 7px rgba(110, 168, 254, .25);
+}
