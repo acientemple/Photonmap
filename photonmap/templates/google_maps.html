@@ -198,7 +198,7 @@ const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
 const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
   onSelect: function (photoIndex, photo) {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, '*');
+      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, window.location.origin);
     }
   }
 });
@@ -268,6 +268,9 @@ poll();
 
 /* 壳页面点了侧边栏里的照片 → 由这边打开灯箱 */
 window.addEventListener('message', function (event) {
+  /* 只认同源父页面发来的消息 */
+  if (event.origin !== window.location.origin) return;
+  if (window.parent !== window && event.source !== window.parent) return;
   const data = event.data;
   if (!data || data.type !== 'photonmap:open-photo') return;
   const index = PHOTOS.findIndex(function (p) { return p.key === data.key; });

@@ -1390,3 +1390,75 @@ def test_groups_expose_folder(photo_dir, tmp_path):
     library.refresh()
     folders = {group["folder"].replace("\\", "/") for group in library.groups()}
     assert "albums/trip" in folders
+
+
+def test_rejects_dns_rebinding_host(photo_dir, tmp_path):
+    """Host 不是本机地址时一律 403（防 DNS rebinding）。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(base + "/api/photos", headers={"Host": "evil.example"})
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request)
+        assert excinfo.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_rejects_cross_origin_post(photo_dir, tmp_path):
+    """跨站 POST 一律 403（Origin 不是本服务）。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            base + "/api/locate/open",
+            data=json.dumps({"key": "x", "session": server.session}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": "http://evil.example"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request)
+        assert excinfo.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_requires_json_content_type(photo_dir, tmp_path):
+    """非 application/json 的请求体直接 415，挡掉跨站「简单请求」。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            base + "/api/locate/open",
+            data=b"key=x",
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request)
+        assert excinfo.value.code == 415
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_ai_endpoint_requires_session(photo_dir, tmp_path):
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _post_json(base, "/api/ai/locate", {"key": "x"})
+        assert excinfo.value.code == 409
+    finally:
+        server.shutdown()
+        server.server_close()

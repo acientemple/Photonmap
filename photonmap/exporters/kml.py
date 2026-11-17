@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -38,7 +40,7 @@ def _description(photo: PhotoRecord, assets_dir: Path) -> str:
         except ValueError:
             rel = Path(photo.thumbnail).as_uri()
         parts.append(
-            f'<img src="{rel}" alt="{photo.name}" style="max-width:320px;max-height:240px;" />'
+            f'<img src="{rel}" alt="{html.escape(photo.name, quote=True)}" style="max-width:320px;max-height:240px;" />'
         )
     meta = []
     if photo.taken_at:

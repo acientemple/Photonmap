@@ -145,6 +145,9 @@ AMAP_TILES = [
 # 可选的地图引擎。coord_system 是这个引擎的**默认**坐标基准
 # （也就是首层底图的基准）；各层底图自己的基准在 tiles 里逐层声明。
 # 百度是 BD-09；Google 与高德在国内是 GCJ-02；Leaflet 默认 WGS-84。
+# 只监听本机时接受的 Host（防 DNS rebinding：攻击者域名解析到 127.0.0.1）
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
 ENGINES = {
     "leaflet": {
         "label": "Leaflet",
@@ -944,12 +947,39 @@ class LiveHandler(BaseHTTPRequestHandler):
 
     server_version = "photonmap"
 
+    def _request_allowed(self) -> bool:
+        """挡掉 DNS rebinding 和跨站提交。
+
+        服务默认只监听本机，但恶意网页可以把自己的域名解析到 127.0.0.1：
+        浏览器发来的请求 Host 是攻击者的域名、目标却是本服务。所以
+        Host 必须是本机地址；带 Origin 的请求还要和本服务同源。
+        """
+        bind = getattr(self.server, "bind_host", "127.0.0.1")
+        allowed = getattr(self.server, "allowed_hosts", set())
+        if bind in LOOPBACK_HOSTS:
+            host = (self.headers.get("Host") or "").strip().lower()
+            if host and host not in allowed:
+                return False
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if origin:
+            allowed_origins = {f"http://{item}" for item in allowed}
+            if origin not in allowed_origins:
+                return False
+            if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+                return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+        if not self._request_allowed():
+            self.send_error(403, "Forbidden")
+            return
         try:
             if path in ("/", "/index.html"):
-                self._send_bytes(self.server.shell, "text/html; charset=utf-8")
+                self._send_bytes(
+                    self.server.shell, "text/html; charset=utf-8", frame_ancestors="none"
+                )
             elif path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
@@ -978,6 +1008,9 @@ class LiveHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定
         path = unquote(urlparse(self.path).path)
+        if not self._request_allowed():
+            self.send_error(403, "Forbidden")
+            return
         try:
             if path == "/api/locate":
                 self._handle_locate()
@@ -1067,7 +1100,7 @@ class LiveHandler(BaseHTTPRequestHandler):
             self.server.tiles,
             self.server.poll_ms,
         )
-        self._send_bytes(page, "text/html; charset=utf-8")
+        self._send_bytes(page, "text/html; charset=utf-8", frame_ancestors="self")
 
     def _handle_locate_open(self) -> None:
         """用户打开了确认浮层 → 签发一次性令牌。
@@ -1348,6 +1381,9 @@ class LiveHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         if payload is None:
             return
+        if payload.get("session") != self.server.session:
+            self.send_error(409, "Stale Session")
+            return
         key = payload.get("key")
         if not key:
             self.send_error(400, "Bad Request")
@@ -1394,7 +1430,9 @@ class LiveHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         log.debug("%s - %s", self.address_string(), fmt % args)
 
-    def _send_bytes(self, data: bytes, content_type: str) -> None:
+    def _send_bytes(
+        self, data: bytes, content_type: str, frame_ancestors: str | None = None
+    ) -> None:
         # 照片列表动辄 2MB，gzip 之后只剩几百 KB，页面加载快得多。
         # JPEG/PNG 本身已经压过，再压一遍只是白烧 CPU（一页几千张图时非常明显）。
         wants_gzip = (
@@ -1411,6 +1449,17 @@ class LiveHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if frame_ancestors == "none":
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        else:
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            if frame_ancestors:
+                self.send_header(
+                    "Content-Security-Policy", f"frame-ancestors '{frame_ancestors}'"
+                )
         self.end_headers()
         self.wfile.write(data)
 
@@ -1419,6 +1468,12 @@ class LiveHandler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict | None:
         """读请求体里的 JSON；解析失败时已经回过 400。"""
+        # 只接受 application/json：跨站的「简单请求」发不了这个类型，
+        # 挡掉一类不经过预检的 CSRF
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self.send_error(415, "Unsupported Media Type")
+            return None
         length = int(self.headers.get("Content-Length") or 0)
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
@@ -1624,6 +1679,19 @@ def build_server(
         shell,
         _FullCache(),
     )
+    # 防 DNS rebinding：Host 必须是本机地址（含实际端口）
+    server.bind_host = host
+    actual_port = server.server_address[1]
+    server.allowed_hosts = {
+        f"127.0.0.1:{actual_port}",
+        f"localhost:{actual_port}",
+        f"[::1]:{actual_port}",
+        f"::1:{actual_port}",
+    }
+    if host not in LOOPBACK_HOSTS:
+        log.warning("服务监听在 %s（非本机地址），局域网内其它设备可访问并改写定位", host)
+        print(f"警告：服务监听在 {host}，不是本机地址，局域网内其它设备可以访问并改写定位", flush=True)
+
     server.tiles = tiles
     server.engine_options = engine_options
     server.poll_ms = poll_ms

@@ -158,6 +158,10 @@ photonmap 把带 GPS 信息的照片导出成可在地图上查看的文件（KM
 - **原图走接口**：`/api/original/<key>` 直接回传原文件。浏览器不允许 http 页面跳 `file://`，所以服务模式下不能用 `file:` URI。
 - **静态资源**：`photo_map.js` / `photo_map.css` / `vendor/`（Leaflet）复制到工作目录，默认在 `%LOCALAPPDATA%\photonmap\<hash>`（Linux/macOS 是 `~/.cache/photonmap/<hash>`），可用 `--workdir` 改。
 - **目录穿越防护**：静态文件必须解析后仍位于资源目录内，否则 404。
+- **只接受本机 Host**：`_request_allowed()` 校验 `Host` 必须是 `127.0.0.1/localhost/[::1]:<端口>`（防 DNS rebinding：恶意域名解析到 127.0.0.1 后浏览器会把请求发到本服务），带 `Origin` 的请求还必须同源、`Sec-Fetch-Site: cross-site` 直接拒；`--host` 不是回环地址时会打印警告。
+- **POST 只收 `application/json`**：`_read_json()` 其他类型回 415，挡掉跨站「简单请求」。`/api/ai/locate` 也补上了 `session` 校验。
+- **安全响应头**：所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options`；壳页面 `frame-ancestors 'none'`，地图页 `frame-ancestors 'self'`（要能被壳页面嵌）。
+- **页面间消息只认同源**：壳页面与 iframe 的 `message` 监听都先校验 `event.origin === window.location.origin`（壳页面还要求 `event.source === frame.contentWindow`），`postMessage` 的目标 origin 用 `window.location.origin`（静态导出走 `file://` 时退回 `'*'`）。
 - **响应按需 gzip**：`_send_bytes()` 只在体积 ≥1KB **且是文本类**（json/html/js/css/svg）时压缩。`/api/photos` 在 4000 张照片时约 2.2MB，压缩后只要 200KB 左右；JPEG/PNG 本身已压过，再压是白烧 CPU。
 - **listen backlog 128**：`LiveServer.request_queue_size`。默认的 5 在页面上千张图同时请求时会直接拒掉新连接（浏览器报 `ERR_CONNECTION_REFUSED`）。
 - **分组结果按版本缓存**：`groups()` 里 `build_groups`+`infer` 在几千张照片时要好几秒，版本号没变就直接复用（副本返回，外部改动不影响缓存）。

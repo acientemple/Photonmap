@@ -378,7 +378,7 @@ function askMapView(timeoutMs) {
   return new Promise(function (resolve) {
     if (!frame.contentWindow) { resolve(null); return; }
     viewRequestResolve = resolve;
-    frame.contentWindow.postMessage({ type: 'photonmap:get-view' }, '*');
+    frame.contentWindow.postMessage({ type: 'photonmap:get-view' }, window.location.origin);
     setTimeout(function () {
       if (viewRequestResolve === resolve) {
         viewRequestResolve = null;
@@ -1544,7 +1544,7 @@ document.getElementById('locate-ai').addEventListener('click', async function ()
     const res = await fetch('/api/ai/locate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: locateAiKey })
+      body: JSON.stringify({ key: locateAiKey, session: SESSION })
     });
     if (!res.ok) {
       const detail = await res.text();
@@ -1717,6 +1717,9 @@ document.getElementById('locate-coord-input').addEventListener('keydown', functi
 
 /* 主地图里点了「?」标记 → 打开同一个确认浮层 */
 window.addEventListener('message', function (event) {
+  /* 只认同源 iframe 发来的消息，别被别的页面/窗口冒充 */
+  if (event.origin !== window.location.origin) return;
+  if (!frame.contentWindow || event.source !== frame.contentWindow) return;
   const data = event.data;
   if (!data) return;
   if (data.type === 'photonmap:view' && viewRequestResolve) {

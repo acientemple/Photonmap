@@ -176,7 +176,7 @@ const strip = new PhotoMap.Filmstrip(PHOTOS, {
     const keys = indices.map(function (i) { return PHOTOS[i] && PHOTOS[i].key; })
                         .filter(Boolean);
     if (!keys.length) return;
-    window.parent.postMessage({ type: 'photonmap:move-photos', keys: keys }, '*');
+    window.parent.postMessage({ type: 'photonmap:move-photos', keys: keys }, window.location.origin);
   } : null
 });
 
@@ -199,7 +199,7 @@ const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
 const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
   onSelect: function (photoIndex, photo) {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, '*');
+      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, window.location.origin);
     }
   }
 });
@@ -312,13 +312,16 @@ dragSave.addEventListener('click', function () {
     lat: pending.lat,
     lon: pending.lon,
     system: COORD_SYSTEM
-  }, '*');
+  }, window.location.origin);
 });
 
 dragCancel.addEventListener('click', cancelDrag);
 
 /* 壳页面来的消息 */
 window.addEventListener('message', function (event) {
+  /* 只认同源父页面发来的消息 */
+  if (event.origin !== window.location.origin) return;
+  if (window.parent !== window && event.source !== window.parent) return;
   const data = event.data;
   if (!data) return;
   if (data.type === 'photonmap:move-result') {
@@ -342,7 +345,7 @@ window.addEventListener('message', function (event) {
   if (data.type === 'photonmap:get-view') {
     const center = map.getCenter();
     const wgs = PhotoMap.coord.convert(center.lat, center.lng, 'wgs84', COORD_SYSTEM);
-    window.parent.postMessage({ type: 'photonmap:view', lat: wgs.lat, lon: wgs.lon }, '*');
+    window.parent.postMessage({ type: 'photonmap:view', lat: wgs.lat, lon: wgs.lon }, window.location.origin);
     return;
   }
   /* 壳页面点了侧边栏里的照片 → 由这边打开灯箱 */
