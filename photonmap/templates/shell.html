@@ -1521,12 +1521,18 @@ function showCoord(lat, lon) {
     '（' + (labels[overlayEngine] || overlayEngine) + '）';
 }
 
-/* iframe 里拖动标记 → 同步回面板上的坐标 */
+/* iframe 里拖动标记 → 同步回面板上的坐标。
+   本次会话的基准（overlayEngine）在打开浮层时就定死：底图可能中途换层
+   （Google 的卫星/路网基准不同），不能把同一个数字按新基准重新解释，
+   而是把点从地图当前基准换算回会话基准。 */
 function applyEditPoint(lat, lon, system) {
-  if (system) overlayEngine = system;
-  editPoint = { lat: lat, lon: lon };
-  locateInitial = { lat: lat, lon: lon };
-  if (!overlayEl.hidden) showCoord(lat, lon);
+  let point = { lat: lat, lon: lon };
+  if (system && system !== overlayEngine) {
+    point = PhotoMap.coord.convert(lat, lon, overlayEngine, system);
+  }
+  editPoint = point;
+  locateInitial = point;
+  if (!overlayEl.hidden) showCoord(point.lat, point.lon);
 }
 
 /* 百度地址搜索 */
@@ -1770,7 +1776,7 @@ window.addEventListener('message', function (event) {
   if (data.type === 'photonmap:view' && viewRequestResolve) {
     const resolve = viewRequestResolve;
     viewRequestResolve = null;
-    resolve({ lat: data.lat, lon: data.lon });
+    resolve({ lat: data.lat, lon: data.lon, system: data.system || null });
     return;
   }
   if (data.type === 'photonmap:pending-click') {

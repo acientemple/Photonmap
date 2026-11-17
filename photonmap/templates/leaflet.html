@@ -42,6 +42,14 @@ const LIVE = {{ options.live|tojson }};
 /* 发给父页面的目标 origin：静态导出走 file:// 时只能 '*' */
 const PARENT_ORIGIN = (window.location.protocol === 'http:' || window.location.protocol === 'https:')
   ? window.location.origin : '*';
+/* 只向同源父页面发消息：静态导出是 file://（origin 不透明），
+   这时把坐标/照片 key 发给任意嵌入者会泄漏数据 */
+function postToParent(message) {
+  if (window.parent === window) return;
+  if (PARENT_ORIGIN === '*') return;
+  window.parent.postMessage(message, PARENT_ORIGIN);
+}
+
 let PHOTOS = {{ photos|tojson }};
 let PENDING = {{ (pending or [])|tojson }};
 const COORD_LABEL = {{ coord_label|tojson }};
@@ -180,7 +188,7 @@ const strip = new PhotoMap.Filmstrip(PHOTOS, {
     const keys = indices.map(function (i) { return PHOTOS[i] && PHOTOS[i].key; })
                         .filter(Boolean);
     if (!keys.length) return;
-    window.parent.postMessage({ type: 'photonmap:move-photos', keys: keys }, PARENT_ORIGIN);
+    postToParent({ type: 'photonmap:move-photos', keys: keys });
   } : null
 });
 
@@ -203,7 +211,7 @@ const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
 const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
   onSelect: function (photoIndex, photo) {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, PARENT_ORIGIN);
+      postToParent({ type: 'photonmap:pending-click', key: photo.key });
     }
   }
 });
@@ -326,13 +334,13 @@ dragSave.addEventListener('click', function () {
   dragSave.disabled = true;
   dragCancel.disabled = true;
   dragText.textContent = '保存中…';
-  window.parent.postMessage({
+  postToParent({
     type: 'photonmap:drag-move',
     key: pending.key,
     lat: pending.lat,
     lon: pending.lon,
     system: currentSystem
-  }, PARENT_ORIGIN);
+  });
 });
 
 dragCancel.addEventListener('click', cancelDrag);
@@ -364,36 +372,30 @@ window.addEventListener('message', function (event) {
   }
     /* 就地改位置：在主地图上放一个可拖动的标记 */
   if (data.type === 'photonmap:edit-start') {
+    if (!LIVE) return;
     removeEditMarker();
     const icon = L.divIcon({ className: 'pm-locate-pin', iconSize: [18, 18], iconAnchor: [9, 9] });
     editMarker = L.marker([data.lat, data.lon], { draggable: true, icon: icon }).addTo(map);
     editMarker.on('dragend', function () {
       const p = editMarker.getLatLng();
-      window.parent.postMessage(
-        { type: 'photonmap:edit-point', lat: p.lat, lon: p.lng, system: currentSystem },
-        PARENT_ORIGIN
-      );
+      postToParent({ type: 'photonmap:edit-point', lat: p.lat, lon: p.lng, system: currentSystem });
     });
     map.setView([data.lat, data.lon], Math.max(map.getZoom(), 16));
     if (data.pan) map.panBy([0, -data.pan]);
-    window.parent.postMessage(
-      { type: 'photonmap:edit-point', lat: data.lat, lon: data.lon, system: currentSystem },
-      PARENT_ORIGIN
-    );
+    postToParent({ type: 'photonmap:edit-point', lat: data.lat, lon: data.lon, system: currentSystem });
     return;
   }
   if (data.type === 'photonmap:edit-move') {
+    if (!LIVE) return;
     if (editMarker) {
       editMarker.setLatLng([data.lat, data.lon]);
       map.setView([data.lat, data.lon], Math.max(map.getZoom(), 16));
-      window.parent.postMessage(
-        { type: 'photonmap:edit-point', lat: data.lat, lon: data.lon, system: currentSystem },
-        PARENT_ORIGIN
-      );
+      postToParent({ type: 'photonmap:edit-point', lat: data.lat, lon: data.lon, system: currentSystem });
     }
     return;
   }
   if (data.type === 'photonmap:edit-end') {
+    if (!LIVE) return;
     removeEditMarker();
     return;
   }
@@ -401,10 +403,7 @@ window.addEventListener('message', function (event) {
   if (data.type === 'photonmap:get-view') {
     const center = map.getCenter();
     const wgs = PhotoMap.coord.convert(center.lat, center.lng, 'wgs84', currentSystem);
-    window.parent.postMessage(
-      { type: 'photonmap:view', lat: wgs.lat, lon: wgs.lon, system: currentSystem },
-      PARENT_ORIGIN
-    );
+    postToParent({ type: 'photonmap:view', lat: wgs.lat, lon: wgs.lon, system: currentSystem });
     return;
   }
   /* 壳页面点了侧边栏里的照片 → 由这边打开灯箱 */

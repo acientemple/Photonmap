@@ -43,6 +43,14 @@ const LIVE = {{ options.live|tojson }};
 /* 发给父页面的目标 origin：静态导出走 file:// 时只能 '*' */
 const PARENT_ORIGIN = (window.location.protocol === 'http:' || window.location.protocol === 'https:')
   ? window.location.origin : '*';
+/* 只向同源父页面发消息：静态导出是 file://（origin 不透明），
+   这时把坐标/照片 key 发给任意嵌入者会泄漏数据 */
+function postToParent(message) {
+  if (window.parent === window) return;
+  if (PARENT_ORIGIN === '*') return;
+  window.parent.postMessage(message, PARENT_ORIGIN);
+}
+
 let PHOTOS = {{ photos|tojson }};
 const PENDING = {{ (pending or [])|tojson }};
 const COORD_LABEL = {{ coord_label|tojson }};
@@ -201,7 +209,7 @@ const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
 const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
   onSelect: function (photoIndex, photo) {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, PARENT_ORIGIN);
+      postToParent({ type: 'photonmap:pending-click', key: photo.key });
     }
   }
 });
