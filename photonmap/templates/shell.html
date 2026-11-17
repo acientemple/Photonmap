@@ -22,6 +22,10 @@
   .tabs button.active { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
   .tabs button:disabled { opacity: .38; cursor: not-allowed; }
   .tabs button.gear { flex: 0 0 30px; }
+  .section button { margin-left: 6px; padding: 2px 8px; font-size: 11px; font-family: inherit;
+                    background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                    border-radius: 4px; cursor: pointer; }
+  .section button:hover:not(:disabled) { background: #262e37; }
   .section { font-size: 12px; color: #9aa0a6; padding: 10px 16px 6px;
              border-top: 1px solid #262b31; }
   /* iframe 是替换元素：宽度要自己算，给了 width:auto 就会退回 300px 的固有尺寸 */
@@ -196,7 +200,11 @@
     <div class="hint">Google Maps 与高德地图用的是官方公开瓦片，不需要密钥。</div>
   </div>
   <div class="section" id="count">正在载入…</div>
-  <div class="section" id="pending-head" hidden>待确认定位 <span id="pending-count">0</span></div>
+  <div class="section" id="pending-head" hidden>待确认定位 <span id="pending-count">0</span>
+    <button type="button" id="pending-pick-all" hidden>全选</button>
+    <button type="button" id="pending-same" hidden>所选同点</button>
+    <button type="button" id="pending-assign" hidden>各自候选</button>
+  </div>
   <div id="pending-list"></div>
   <div class="section" id="located-head" hidden>照片 <span id="located-count">0</span></div>
   <div id="list"></div>
@@ -388,6 +396,24 @@ function askMapView(timeoutMs) {
   });
 }
 
+/* 记住上一次确认/拖动用的位置：浮层默认落在那里，而不是南极（PHOTOS[0] 可能是坏坐标） */
+function lastLocatePoint() {
+  try {
+    const raw = localStorage.getItem('photonmap.lastLocate');
+    if (!raw) return null;
+    const point = JSON.parse(raw);
+    if (point && isFinite(point.lat) && isFinite(point.lon)) return point;
+  } catch (e) {}
+  return null;
+}
+
+function rememberLocatePoint(lat, lon) {
+  if (!isFinite(lat) || !isFinite(lon)) return;
+  try {
+    localStorage.setItem('photonmap.lastLocate', JSON.stringify({ lat: lat, lon: lon }));
+  } catch (e) {}
+}
+
 function gotoPoint(lat, lon, zoom) {
   if (!frame.contentWindow) return;
   frame.contentWindow.postMessage(
@@ -425,6 +451,10 @@ async function saveDraggedPhoto(msg) {
       })
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    const chosen = PhotoMap.coord.convert(
+      msg.lat, msg.lon, 'wgs84', msg.system || 'wgs84'
+    );
+    rememberLocatePoint(chosen.lat, chosen.lon);
     reply(true);
     version = -1;
     await refreshNow();
@@ -483,6 +513,10 @@ function renderLists() {
 
   document.getElementById('pending-head').hidden = PENDING.length === 0;
   document.getElementById('pending-count').textContent = String(PENDING.length);
+  ['pending-pick-all', 'pending-same', 'pending-assign'].forEach(function (id) {
+    document.getElementById(id).hidden = PENDING.length === 0;
+  });
+  document.getElementById('pending-pick-all').textContent = '全选';
   document.getElementById('located-head').hidden = PHOTOS.length === 0;
   document.getElementById('located-count').textContent = String(PHOTOS.length);
 
@@ -490,14 +524,20 @@ function renderLists() {
   PENDING.forEach(function (photo) {
     const row = document.createElement('div');
     row.className = 'pending';
+    row.dataset.key = photo.key;
     const candidate = photo.candidate;
     const hint = candidate
       ? '候选：' + candidate.confidence + '（来自 ' + candidate.source_name + '）'
       : '没有可推断的候选位置，请直接在地图上标出';
     row.innerHTML =
+      '<input type="checkbox" class="pick" title="勾选后可批量处理" />' +
       '<img loading="lazy" decoding="async" src="' + PhotoMap.esc(photo.thumb) + '" alt="" />' +
       '<div><div class="nm">' + PhotoMap.esc(photo.name) + '</div>' +
       '<div class="hint">' + PhotoMap.esc(hint) + '</div></div>';
+    /* 勾选框只管选择，不要顺带打开定位浮层 */
+    row.querySelector('.pick').addEventListener('click', function (event) {
+      event.stopPropagation();
+    });
     row.addEventListener('click', function () { openLocate(photo.key); });
     pendingList.appendChild(row);
   });
@@ -513,6 +553,45 @@ function renderLists() {
     openLocate(photo.key);
   });
 }
+
+/* ---------------------------------------------------------------- 待确认照片批量操作 */
+
+function checkedPendingKeys() {
+  const keys = [];
+  document.querySelectorAll('#pending-list .pending').forEach(function (row) {
+    const box = row.querySelector('.pick');
+    if (box && box.checked) keys.push(row.dataset.key);
+  });
+  return keys;
+}
+
+document.getElementById('pending-pick-all').addEventListener('click', function () {
+  const boxes = Array.prototype.slice.call(document.querySelectorAll('#pending-list .pick'));
+  if (!boxes.length) return;
+  const allChecked = boxes.every(function (box) { return box.checked; });
+  boxes.forEach(function (box) { box.checked = !allChecked; });
+  this.textContent = allChecked ? '全选' : '取消全选';
+});
+
+document.getElementById('pending-same').addEventListener('click', function () {
+  const keys = checkedPendingKeys();
+  if (!keys.length) { alert('先勾选要处理的照片。'); return; }
+  openLocateMany(keys);
+});
+
+document.getElementById('pending-assign').addEventListener('click', async function () {
+  const keys = checkedPendingKeys();
+  if (!keys.length) { alert('先勾选要处理的照片。'); return; }
+  const button = this;
+  button.disabled = true;
+  try {
+    await applyKeysAssign(keys);
+  } catch (err) {
+    alert('批量写入失败：' + err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 /* ---------------------------------------------------------------- 分组批量定位 */
 
@@ -1259,8 +1338,15 @@ async function openLocate(key) {
   } else if (locateIsLocated) {
     point = { lat: photo.lat, lon: photo.lon };
   } else {
-    const raw = PHOTOS[0] || { lat: 0, lon: 0 };
-    point = toOverlay(raw.lat, raw.lon, PHOTO_SYSTEM);
+    const remembered = lastLocatePoint();
+    if (remembered) {
+      point = toOverlay(remembered.lat, remembered.lon, 'wgs84');
+    } else {
+      const view = await askMapView();
+      point = view
+        ? toOverlay(view.lat, view.lon, 'wgs84')
+        : toOverlay(31.2304, 121.4737, PHOTO_SYSTEM);
+    }
   }
   buildOverlayMap(point);
   setPoint(point.lat, point.lon);
@@ -1324,6 +1410,10 @@ async function openLocateMany(keys) {
     point = toOverlay(first.candidate.lat, first.candidate.lon, PHOTO_SYSTEM);
   }
   if (!point) {
+    const remembered = lastLocatePoint();
+    if (remembered) point = toOverlay(remembered.lat, remembered.lon, 'wgs84');
+  }
+  if (!point) {
     const view = await askMapView();
     if (view) point = toOverlay(view.lat, view.lon, 'wgs84');
   }
@@ -1372,8 +1462,11 @@ async function openLocateMany(keys) {
     const anchor = group.located_members.length
       ? PHOTOS.find(function (p) { return p.key === group.located_members[0]; })
       : null;
+    const remembered = lastLocatePoint();
     if (anchor) {
       point = toOverlay(anchor.lat, anchor.lon, PHOTO_SYSTEM);
+    } else if (remembered) {
+      point = toOverlay(remembered.lat, remembered.lon, 'wgs84');
     } else {
       const view = await askMapView();
       point = view
@@ -1654,6 +1747,8 @@ document.getElementById('locate-ok').addEventListener('click', async function ()
       const target = PhotoMap.coord.convert(point.lat, point.lon, PHOTO_SYSTEM, overlayEngine);
       await applyGroupShift(locateGroup, target);
     }
+    const chosen = PhotoMap.coord.convert(point.lat, point.lon, 'wgs84', overlayEngine);
+    rememberLocatePoint(chosen.lat, chosen.lon);
     closeLocate();
     version = -1;   // 强制下次轮询拉取最新数据
     await refreshNow();
