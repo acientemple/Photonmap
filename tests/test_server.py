@@ -1462,3 +1462,61 @@ def test_ai_endpoint_requires_session(photo_dir, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_rejects_cross_site_fetch_without_origin(photo_dir, tmp_path):
+    """Sec-Fetch-Site: cross-site 即使没有 Origin 也要拒。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            base + "/api/photos", headers={"Sec-Fetch-Site": "cross-site"}
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request)
+        assert excinfo.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_exposed_server_allows_ip_host_but_not_domain(photo_dir, tmp_path):
+    """--host 0.0.0.0 时局域网用 IP 能访问，域名（rebinding 用的）一律拒。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0, host="0.0.0.0")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base = f"http://127.0.0.1:{port}"
+        ok = urllib.request.Request(base + "/api/photos", headers={"Host": f"192.168.1.50:{port}"})
+        with urllib.request.urlopen(ok) as res:
+            assert res.status == 200
+
+        bad = urllib.request.Request(base + "/api/photos", headers={"Host": f"evil.example:{port}"})
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(bad)
+        assert excinfo.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_loopback_server_rejects_lan_ip_host(photo_dir, tmp_path):
+    """只监听本机时，哪怕 Host 是 IP 字面量（局域网地址）也不认。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/photos",
+            headers={"Host": f"192.168.1.50:{port}"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request)
+        assert excinfo.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()

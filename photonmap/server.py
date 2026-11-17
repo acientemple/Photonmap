@@ -12,6 +12,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ from uuid import uuid4
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from PIL import Image, ImageOps
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -145,8 +146,17 @@ AMAP_TILES = [
 # 可选的地图引擎。coord_system 是这个引擎的**默认**坐标基准
 # （也就是首层底图的基准）；各层底图自己的基准在 tiles 里逐层声明。
 # 百度是 BD-09；Google 与高德在国内是 GCJ-02；Leaflet 默认 WGS-84。
-# 只监听本机时接受的 Host（防 DNS rebinding：攻击者域名解析到 127.0.0.1）
+# 本机地址（防 DNS rebinding：攻击者域名解析到 127.0.0.1）
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _is_ip_literal(hostname: str) -> bool:
+    """是不是 IP 字面量（这决定「局域网访问」允不允许）。"""
+    try:
+        ipaddress.ip_address(hostname.strip("[]"))
+        return True
+    except ValueError:
+        return False
 
 ENGINES = {
     "leaflet": {
@@ -951,23 +961,46 @@ class LiveHandler(BaseHTTPRequestHandler):
         """挡掉 DNS rebinding 和跨站提交。
 
         服务默认只监听本机，但恶意网页可以把自己的域名解析到 127.0.0.1：
-        浏览器发来的请求 Host 是攻击者的域名、目标却是本服务。所以
-        Host 必须是本机地址；带 Origin 的请求还要和本服务同源。
+        浏览器发来的请求 Host 是攻击者的域名、目标却是本服务。规则：
+        - 浏览器标成 `Sec-Fetch-Site: cross-site` 的一律拒（不管有没有 Origin）；
+        - Host 可以是本机地址；用 `--host 0.0.0.0` 暴露到局域网时，还允许
+          **IP 字面量**（局域网里用 IP 访问），但域名一律拒——rebinding 用的
+          正是域名；
+        - 带 Origin 的请求要同源，同样只认本机地址 / IP 字面量。
         """
-        bind = getattr(self.server, "bind_host", "127.0.0.1")
-        allowed = getattr(self.server, "allowed_hosts", set())
-        if bind in LOOPBACK_HOSTS:
-            host = (self.headers.get("Host") or "").strip().lower()
-            if host and host not in allowed:
-                return False
+        if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+            return False
+
+        port = getattr(self.server, "listen_port", None)
+        exposed = bool(getattr(self.server, "exposed", False))
+
         origin = (self.headers.get("Origin") or "").strip().lower()
         if origin:
-            allowed_origins = {f"http://{item}" for item in allowed}
-            if origin not in allowed_origins:
+            parts = urlsplit(origin)
+            if parts.scheme != "http":
                 return False
-            if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+            if port is not None and parts.port not in (None, port):
                 return False
-        return True
+            origin_host = (parts.hostname or "").strip().lower()
+            if origin_host not in LOOPBACK_HOSTS:
+                if not (exposed and _is_ip_literal(origin_host)):
+                    return False
+
+        host = (self.headers.get("Host") or "").strip().lower().rstrip(".")
+        if not host:
+            return True  # HTTP/1.0 客户端不带 Host；本服务自己的页面不会这么发
+        if host.startswith("["):
+            hostname = host[1:].split("]", 1)[0]
+        elif host.count(":") == 1:
+            hostname = host.rsplit(":", 1)[0]
+        else:
+            hostname = host
+        if hostname in LOOPBACK_HOSTS:
+            return True
+        if exposed and _is_ip_literal(hostname):
+            return True
+        bind_host = (getattr(self.server, "bind_host", "") or "").strip().lower()
+        return bool(bind_host) and hostname == bind_host
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定
         parsed = urlparse(self.path)
@@ -1681,14 +1714,9 @@ def build_server(
     )
     # 防 DNS rebinding：Host 必须是本机地址（含实际端口）
     server.bind_host = host
-    actual_port = server.server_address[1]
-    server.allowed_hosts = {
-        f"127.0.0.1:{actual_port}",
-        f"localhost:{actual_port}",
-        f"[::1]:{actual_port}",
-        f"::1:{actual_port}",
-    }
-    if host not in LOOPBACK_HOSTS:
+    server.listen_port = server.server_address[1]
+    server.exposed = host not in LOOPBACK_HOSTS
+    if server.exposed:
         log.warning("服务监听在 %s（非本机地址），局域网内其它设备可访问并改写定位", host)
         print(f"警告：服务监听在 {host}，不是本机地址，局域网内其它设备可以访问并改写定位", flush=True)
 
