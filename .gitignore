@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+out/
+# 本地数据与个人照片（不要提交）
+iphone-photo/
+out_photos/
+$CLAUDE_JOB_DIR/
+
+# 会话/工具目录
+.remember/
+.superpowers/
+.playwright-mcp/
+.claude/
+
+# 内部规划文档（含本机路径）
+docs/superpowers/
+
+# 调试截图
+/lightbox.png
+/locate-*.png

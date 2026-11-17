@@ -1,0 +1,1837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>照片地图</title>
+<link rel="stylesheet" href="{{ asset_prefix }}/vendor/leaflet.css" />
+<link rel="stylesheet" href="{{ asset_prefix }}/photo_map.css" />
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif;
+               background: #101418; color: #e8eaed; }
+  :root { --side-w: 300px; }
+
+  #side { position: absolute; left: 0; top: 0; bottom: 0; width: var(--side-w); overflow-y: auto;
+          background: #101418; border-right: 1px solid #262b31; }
+  #side h1 { font-size: 15px; padding: 14px 16px 8px; margin: 0; font-weight: 600; }
+  .tabs { display: flex; gap: 4px; padding: 0 12px 10px; }
+  .tabs button { flex: 1; padding: 6px 4px; font-size: 12px; font-family: inherit;
+                 background: #1d242b; color: #c3c9d0; border: 1px solid #2f3740;
+                 border-radius: 4px; cursor: pointer; }
+  .tabs button:hover:not(:disabled) { background: #262e37; }
+  .tabs button.active { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
+  .tabs button:disabled { opacity: .38; cursor: not-allowed; }
+  .tabs button.gear { flex: 0 0 30px; }
+  .section { font-size: 12px; color: #9aa0a6; padding: 10px 16px 6px;
+             border-top: 1px solid #262b31; }
+  /* iframe 是替换元素：宽度要自己算，给了 width:auto 就会退回 300px 的固有尺寸 */
+  #mapframe { position: absolute; top: 0; left: calc(var(--side-w) + 6px);
+              width: calc(100% - var(--side-w) - 6px); height: 100%;
+              border: 0; background: #1a1f24; }
+
+  /* 拖动分隔条：调整侧栏宽度 */
+  #splitter { position: absolute; top: 0; bottom: 0; left: var(--side-w); width: 6px;
+              cursor: col-resize; z-index: 20; background: transparent; }
+  #splitter:hover, #splitter.dragging { background: #6ea8fe; }
+
+  /* 单击分隔条把侧栏收起：--side-w 归零，地图铺满；再单击恢复 */
+  body.side-collapsed { --side-w: 0px; }
+  body.side-collapsed #side { border-right: 0; overflow: hidden; }
+  body.side-collapsed #splitter { width: 10px; background: #262b31; }
+  body.side-collapsed #splitter:hover { background: #6ea8fe; }
+
+  /* 密钥设置 */
+  #settings { padding: 0 12px 12px; }
+  #settings label { display: block; font-size: 11px; color: #9aa0a6; margin: 8px 0 4px; }
+  #settings input { width: 100%; box-sizing: border-box; padding: 5px 8px; font-size: 12px;
+                    font-family: inherit; background: #1d242b; color: #e8eaed;
+                    border: 1px solid #2f3740; border-radius: 4px; }
+  #settings button { margin-top: 10px; width: 100%; padding: 6px; font-size: 12px; font-family: inherit;
+                     background: #1d4e86; border: 1px solid #6ea8fe; color: #fff; border-radius: 4px;
+                     cursor: pointer; }
+  #settings .hint { font-size: 11px; color: #6ea8fe; margin-top: 8px; line-height: 1.5; }
+
+  /* 地址搜索 */
+  .search-bar { display: flex; gap: 6px; padding: 0 12px 8px; }
+  .search-bar input { flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px; font-family: inherit;
+                      background: #1d242b; color: #e8eaed; border: 1px solid #2f3740; border-radius: 4px; }
+  .search-bar button { padding: 6px 10px; font-size: 12px; font-family: inherit; white-space: nowrap;
+                       background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                       border-radius: 4px; cursor: pointer; }
+  .search-bar button:hover { background: #262e37; }
+  #geo-results { padding: 0 12px 10px; }
+  #geo-results .hint { font-size: 11px; color: #9aa0a6; padding: 4px 4px 6px; line-height: 1.5; }
+  .geo-hit { padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+  .geo-hit:hover { background: #1a2028; }
+  .geo-hit .nm { font-size: 12px; color: #e8eaed; }
+  .geo-hit .hint { font-size: 11px; color: #9aa0a6; margin-top: 2px;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 分组行可展开看照片 */
+  .group .row { cursor: pointer; }
+  .group-photos { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 16px 10px; }
+  .group-photos img { width: 72px; height: 72px; object-fit: cover; border-radius: 4px;
+                      border: 1px solid #2f3740; cursor: pointer; }
+  .group-photos img.pending-shot { border-color: #f0a63c; }
+
+  /* 照片预览（判断位置准不准时看大图） */
+  #photo-preview { position: fixed; inset: 0; z-index: 12000; background: rgba(0, 0, 0, .82);
+                   display: flex; align-items: center; justify-content: center; }
+  #photo-preview[hidden] { display: none; }
+  #photo-preview .card { position: relative; max-width: 92vw; }
+  #photo-preview img { max-width: 90vw; max-height: 80vh; display: block; border-radius: 4px;
+                       background: #101418; }
+  #photo-preview .cap { margin-top: 8px; font-size: 12px; color: #c3c9d0; text-align: center;
+                        line-height: 1.5; }
+  #photo-preview .close { position: absolute; top: -34px; right: 0; font-size: 12px;
+                          font-family: inherit; background: #1d242b; color: #e8eaed;
+                          border: 1px solid #2f3740; border-radius: 4px; padding: 4px 10px;
+                          cursor: pointer; }
+  #photo-preview .nav { position: absolute; top: 40%; width: 36px; height: 56px; font-size: 22px;
+                        background: rgba(16, 20, 24, .85); color: #fff; border: 1px solid #2f3740;
+                        border-radius: 4px; cursor: pointer; }
+  #photo-preview .nav.prev { left: -46px; }
+  #photo-preview .nav.next { right: -46px; }
+
+  /* 待确认定位的照片 */
+  .pending { display: flex; gap: 8px; align-items: center; padding: 6px 16px; cursor: pointer; }
+  .pending:hover { background: #1a2028; }
+  .pending img { width: 40px; height: 40px; object-fit: cover; border-radius: 3px;
+                 border: 1px dashed #f0a63c; flex: none; }
+  .pending .nm { font-size: 12px; color: #e8eaed; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; }
+  .pending .hint { font-size: 11px; color: #f0a63c; margin-top: 2px; }
+
+  /* 按时间分组的批量定位 */
+  #groups-head { display: flex; align-items: center; gap: 8px; }
+  #groups-head button { margin-left: auto; padding: 3px 8px; font-size: 11px; font-family: inherit;
+                        background: #1d4e86; border: 1px solid #6ea8fe; color: #fff;
+                        border-radius: 4px; cursor: pointer; }
+  #groups-head button[hidden] { display: none; }
+  .group { padding: 8px 16px; border-bottom: 1px solid #1b2026; }
+  .group:hover { background: #1a2028; }
+  .group .row { display: flex; gap: 8px; align-items: flex-start; }
+  .group img.thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 3px;
+                      border: 1px solid #2f3740; flex: none; }
+  .group .nm { font-size: 12px; color: #e8eaed; }
+  .group .hint { font-size: 11px; color: #9aa0a6; margin-top: 2px; line-height: 1.5; }
+  .group .guess { font-size: 11px; color: #8ab4f8; margin-top: 2px; line-height: 1.5; }
+  .group .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; align-items: center; }
+  .group .acts button { padding: 3px 8px; font-size: 11px; font-family: inherit;
+                        background: #1d242b; color: #c3c9d0; border: 1px solid #2f3740;
+                        border-radius: 4px; cursor: pointer; }
+  .group .acts button:hover:not(:disabled) { background: #262e37; }
+  .group .acts button:disabled { opacity: .4; cursor: not-allowed; }
+  .group .acts label { font-size: 11px; color: #9aa0a6; display: flex; align-items: center; gap: 4px; }
+
+  /* 定位确认浮层 */
+  #locate { position: fixed; inset: 0; z-index: 9000; background: rgba(8, 10, 13, .72);
+            display: flex; align-items: center; justify-content: center; }
+  #locate[hidden] { display: none; }
+  /* 面板几乎铺满窗口：确认位置时要像看主地图一样大，
+     否则拖着标记找地方很费劲 */
+  #locate .panel { width: 96vw; height: 94vh; max-width: none; max-height: none;
+                   display: flex; flex-direction: column;
+                   background: #151a20; border: 1px solid #2f3740;
+                   border-radius: 8px; overflow: hidden; }
+  #locate .head, #locate .search, #locate .cands, #locate .foot { flex: none; }
+  #locate .head { padding: 12px 16px; font-size: 14px; font-weight: 600;
+                  border-bottom: 1px solid #262b31; }
+  #locate .head small { display: block; font-weight: 400; font-size: 12px; color: #9aa0a6;
+                        margin-top: 4px; }
+  #locate .search { display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid #262b31; }
+  #locate .search input { flex: 1; padding: 6px 10px; font-size: 13px; font-family: inherit;
+                           background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                           border-radius: 4px; }
+  #locate .search button { padding: 6px 14px; font-size: 13px; font-family: inherit;
+                           background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                           border-radius: 4px; cursor: pointer; }
+  #locate .search button:hover { background: #262e37; }
+  #locate-map { flex: 1 1 auto; min-height: 200px; background: #1a1f24; }
+  .pm-locate-pin { width: 18px; height: 18px; border-radius: 50%; background: #6ea8fe;
+                   border: 2px solid #fff; box-shadow: 0 0 0 7px rgba(110, 168, 254, .25); }
+  #locate .cands { padding: 10px 16px; font-size: 12px; color: #9aa0a6;
+                   border-top: 1px solid #262b31; max-height: 130px; overflow-y: auto; }
+  #locate .cands button { display: block; width: 100%; text-align: left; margin-bottom: 4px;
+                          padding: 6px 10px; font-size: 12px; font-family: inherit;
+                          background: #1d242b; color: #c3c9d0; border: 1px solid #2f3740;
+                          border-radius: 4px; cursor: pointer; }
+  #locate .cands button:hover { background: #262e37; }
+  #locate .foot { display: flex; justify-content: space-between; align-items: center;
+                  gap: 8px; padding: 12px 16px; border-top: 1px solid #262b31; }
+  #locate .foot .coord { font-size: 12px; color: #9aa0a6; }
+  #locate .foot input { width: 190px; padding: 6px 8px; font-size: 12px; font-family: inherit;
+                        background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                        border-radius: 4px; }
+  #locate .foot .btns { display: flex; gap: 8px; }
+  #locate .foot button { padding: 7px 16px; font-size: 13px; font-family: inherit;
+                         border-radius: 4px; cursor: pointer; border: 1px solid #2f3740;
+                         background: #1d242b; color: #e8eaed; }
+  #locate .foot #locate-ok { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
+  #locate .foot #locate-clear { border-color: #7a3b3b; color: #f0a0a0; }
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>照片地图</h1>
+  <div class="tabs" id="tabs"></div>
+  <div class="search-bar">
+    <input id="geo-search" type="text" placeholder="搜索地址或地名" />
+    <button type="button" id="geo-search-go">搜索</button>
+  </div>
+  <div id="geo-results"></div>
+  <div class="section" id="groups-head" hidden><span id="groups-title">按时间分组</span> <span id="groups-count">0</span>
+    <button type="button" id="groups-merge" hidden>按地点合并</button>
+    <button type="button" id="groups-pick-all" hidden>全选</button>
+    <button type="button" id="groups-merge-picked" hidden>合并所选</button>
+    <button type="button" id="groups-same" hidden>所选同点</button>
+    <button type="button" id="groups-apply" hidden>应用所选</button>
+  </div>
+  <div id="groups-list"></div>
+  <div id="settings" hidden>
+    <label>百度地图 AK</label>
+    <input id="key-baidu" type="password" placeholder="没有 AK 时无法使用百度地图" />
+    <button type="button" id="settings-save">保存并应用</button>
+    <div class="hint" id="settings-hint"></div>
+    <div class="hint">Google Maps 与高德地图用的是官方公开瓦片，不需要密钥。</div>
+  </div>
+  <div class="section" id="count">正在载入…</div>
+  <div class="section" id="pending-head" hidden>待确认定位 <span id="pending-count">0</span></div>
+  <div id="pending-list"></div>
+  <div class="section" id="located-head" hidden>照片 <span id="located-count">0</span></div>
+  <div id="list"></div>
+</div>
+<div id="photo-preview" hidden>
+  <div class="card">
+    <button type="button" class="close">关闭</button>
+    <img alt="" />
+    <button type="button" class="nav prev" title="上一张">‹</button>
+    <button type="button" class="nav next" title="下一张">›</button>
+    <div class="cap"></div>
+  </div>
+</div>
+<div id="splitter"></div>
+<iframe id="mapframe" title="地图"></iframe>
+
+<div id="locate" hidden>
+  <div class="panel">
+    <div class="head" id="locate-title">确认照片位置
+      <small>拖动图上的标记到照片真正拍下的位置，或者搜索地址，然后点「确认位置」。</small>
+    </div>
+    <div class="search">
+      <input id="locate-search" type="text" placeholder="搜索地址或地名，例如：杭州市西湖区断桥" />
+      <button type="button" id="locate-search-go">搜索</button>
+      <button type="button" id="locate-ai" {% if not ai_available %}hidden{% endif %}
+              title="用视觉模型看看这张照片可能拍在哪儿">AI 识别地名</button>
+    </div>
+    <div id="locate-map"></div>
+    <div class="cands" id="locate-cands"></div>
+    <div class="foot">
+      <span class="coord" id="locate-coord"></span>
+      <input id="locate-coord-input" type="text" placeholder="纬度, 经度" />
+      <span class="btns">
+        <button type="button" id="locate-clear" hidden>清除定位</button>
+        <button type="button" id="locate-cancel">取消</button>
+        <button type="button" id="locate-ok">确认位置</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<script src="{{ asset_prefix }}/vendor/leaflet.js"></script>
+<script src="{{ asset_prefix }}/photo_map.js"></script>
+<script>
+const ENGINES = {{ engines|tojson }};
+const TILES = {{ tiles|tojson }};
+const AMAP_TILES = {{ amap_tiles|tojson }};
+const POLL_MS = {{ poll_ms|tojson }};
+const SESSION = {{ session|tojson }};
+/* AI 识别要不要用（没装 anthropic 或没凭据时是 false） */
+const AI_AVAILABLE = {{ ai_available|tojson }};
+/* 服务端启动时配置的密钥（页面只在本机访问，暴露在这里是可以的） */
+const SERVER_KEYS = {{ keys|tojson }};
+
+let PHOTOS = [];
+let PENDING = [];
+let GROUPS = [];
+/* 服务端返回的坐标基准：照片与候选位置都在这个基准上 */
+let PHOTO_SYSTEM = 'wgs84';
+let version = -1;
+/* 默认打开高德（混合底图）；高德不可用时退回第一个可用引擎 */
+const PREFERRED_ENGINE = 'amap';
+let currentEngine = (function () {
+  const usable = ENGINES.filter(function (e) { return e.available; });
+  const preferred = usable.filter(function (e) { return e.id === PREFERRED_ENGINE; })[0];
+  return (preferred || usable[0] || ENGINES[0] || { id: 'leaflet' }).id;
+})();
+let locateTarget = null;
+let locateMap = null;
+let locateInitial = null;
+let locateToken = '';
+let locatePoll = null;
+/* 浮层的用途：single 改单张照片；same / shift 改一整簇 */
+let locateMode = 'single';
+let locateGroup = null;
+/* 多选移动：要写入的照片 key 与各自的一次性令牌 */
+let locateMembers = [];
+let locateTokens = {};
+let locateIsLocated = false;
+/* AI 识别用哪张照片：单张时是它自己，整簇时是簇里的代表图 */
+let locateAiKey = '';
+
+/* ---------------------------------------------------------------- 密钥 */
+
+/* 用户在页面上临时填的密钥，存在浏览器本地 */
+function storedKey(id) {
+  try { return localStorage.getItem('photonmap.key.' + id) || ''; }
+  catch (e) { return ''; }
+}
+function storeKey(id, value) {
+  try { localStorage.setItem('photonmap.key.' + id, value || ''); } catch (e) {}
+}
+function engineKey(id) {
+  return storedKey(id) || (SERVER_KEYS[id] || '');
+}
+
+/* ---------------------------------------------------------------- 引擎 Tab */
+
+const tabs = document.getElementById('tabs');
+const frame = document.getElementById('mapframe');
+
+function engineSrc(id) {
+  const params = new URLSearchParams();
+  const key = engineKey(id);
+  /* Google / 高德走官方瓦片，不需要密钥；百度 JS API 必须带 AK */
+  if (id === 'baidu' && key) params.set('ak', key);
+  const query = params.toString();
+  return '/map/' + id + (query ? '?' + query : '');
+}
+
+function buildTabs() {
+  tabs.innerHTML = '';
+  ENGINES.forEach(function (engine) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = engine.label;
+    button.dataset.engine = engine.id;
+    button.addEventListener('click', function () { switchEngine(engine.id); });
+    tabs.appendChild(button);
+  });
+  const gear = document.createElement('button');
+  gear.type = 'button';
+  gear.className = 'gear';
+  gear.textContent = '⚙';
+  gear.title = '设置地图密钥';
+  gear.addEventListener('click', toggleSettings);
+  tabs.appendChild(gear);
+  refreshTabs();
+}
+
+function refreshTabs() {
+  Array.prototype.forEach.call(tabs.querySelectorAll('button[data-engine]'), function (button) {
+    const engine = ENGINES.find(function (e) { return e.id === button.dataset.engine; });
+    const hasKey = engine.available || engineKey(button.dataset.engine);
+    button.disabled = !hasKey;
+    button.title = hasKey ? '' : (engine.label + '：缺少密钥，点右上角齿轮填写');
+    button.classList.toggle('active', button.dataset.engine === currentEngine);
+  });
+}
+
+function switchEngine(id) {
+  currentEngine = id;
+  frame.src = engineSrc(id);
+  refreshTabs();
+}
+
+/* ---------------------------------------------------------------- 密钥设置 */
+
+const settingsPanel = document.getElementById('settings');
+const settingsHint = document.getElementById('settings-hint');
+
+function toggleSettings() {
+  settingsPanel.hidden = !settingsPanel.hidden;
+  if (!settingsPanel.hidden) {
+    document.getElementById('key-baidu').value = engineKey('baidu');
+  }
+}
+
+document.getElementById('settings-save').addEventListener('click', function () {
+  storeKey('baidu', document.getElementById('key-baidu').value.trim());
+  refreshTabs();
+  const key = engineKey(currentEngine);
+  if (key) frame.src = engineSrc(currentEngine);
+  settingsHint.textContent = '已保存到本机浏览器。';
+  setTimeout(function () { settingsHint.textContent = ''; }, 3000);
+});
+
+/* ---------------------------------------------------------------- 地址搜索 */
+
+const geoInput = document.getElementById('geo-search');
+const geoResults = document.getElementById('geo-results');
+
+/* 让当前引擎的地图跳到某个点。
+   坐标一律 WGS-84（服务端只认这个基准），由引擎页按自己的底图基准换算。 */
+/* 问 iframe 里的地图「你现在看的是哪儿」，定位浮层默认落在视野中心 */
+let viewRequestResolve = null;
+
+function askMapView(timeoutMs) {
+  return new Promise(function (resolve) {
+    if (!frame.contentWindow) { resolve(null); return; }
+    viewRequestResolve = resolve;
+    frame.contentWindow.postMessage({ type: 'photonmap:get-view' }, '*');
+    setTimeout(function () {
+      if (viewRequestResolve === resolve) {
+        viewRequestResolve = null;
+        resolve(null);
+      }
+    }, timeoutMs || 800);
+  });
+}
+
+function gotoPoint(lat, lon, zoom) {
+  if (!frame.contentWindow) return;
+  frame.contentWindow.postMessage(
+    { type: 'photonmap:goto', lat: lat, lon: lon, zoom: zoom || 16 }, '*'
+  );
+}
+
+/* 主地图上把单张照片拖到新位置后点「保存」：
+   先拿一次性令牌再写入，结果回给地图页决定收起还是恢复原位置。 */
+async function saveDraggedPhoto(msg) {
+  const reply = function (ok, error) {
+    if (!frame.contentWindow) return;
+    frame.contentWindow.postMessage(
+      { type: 'photonmap:move-result', ok: ok, key: msg.key, error: error || '' }, '*'
+    );
+  };
+  try {
+    const opened = await fetch('/api/locate/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: msg.key, session: SESSION })
+    });
+    if (!opened.ok) throw new Error('HTTP ' + opened.status);
+    const token = (await opened.json()).token;
+    const res = await fetch('/api/locate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key: msg.key,
+        lat: msg.lat,
+        lon: msg.lon,
+        system: msg.system || 'wgs84',
+        session: SESSION,
+        token: token
+      })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    reply(true);
+    version = -1;
+    await refreshNow();
+  } catch (err) {
+    reply(false, err.message);
+  }
+}
+
+async function geoSearch() {
+  const query = geoInput.value.trim();
+  if (!query) return;
+  geoResults.innerHTML = '<div class="hint">正在搜索…</div>';
+  let data;
+  try {
+    const res = await fetch('/api/geocode?q=' + encodeURIComponent(query) +
+                            '&engine=' + encodeURIComponent(currentEngine));
+    data = await res.json();
+  } catch (err) {
+    geoResults.innerHTML = '<div class="hint">搜索失败：' + PhotoMap.esc(err.message) + '</div>';
+    return;
+  }
+  const hits = (data && data.results) || [];
+  if (!hits.length) {
+    geoResults.innerHTML =
+      '<div class="hint">没找到「' + PhotoMap.esc(query) + '」，换个说法试试</div>';
+    return;
+  }
+  geoResults.innerHTML = '';
+  hits.forEach(function (item) {
+    const row = document.createElement('div');
+    row.className = 'geo-hit';
+    row.innerHTML =
+      '<div class="nm">' + PhotoMap.esc(item.label) + '</div>' +
+      '<div class="hint">' + PhotoMap.esc(item.detail || '') + '</div>';
+    row.addEventListener('click', function () { gotoPoint(item.lat, item.lon); });
+    geoResults.appendChild(row);
+  });
+}
+
+document.getElementById('geo-search-go').addEventListener('click', geoSearch);
+geoInput.addEventListener('keydown', function (event) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    geoSearch();
+  }
+});
+
+/* ---------------------------------------------------------------- 侧栏 */
+
+function renderLists() {
+  const list = document.getElementById('list');
+  const pendingList = document.getElementById('pending-list');
+
+  document.getElementById('count').textContent =
+    '已定位 ' + PHOTOS.length + ' 张，待确认 ' + PENDING.length + ' 张';
+
+  document.getElementById('pending-head').hidden = PENDING.length === 0;
+  document.getElementById('pending-count').textContent = String(PENDING.length);
+  document.getElementById('located-head').hidden = PHOTOS.length === 0;
+  document.getElementById('located-count').textContent = String(PHOTOS.length);
+
+  pendingList.innerHTML = '';
+  PENDING.forEach(function (photo) {
+    const row = document.createElement('div');
+    row.className = 'pending';
+    const candidate = photo.candidate;
+    const hint = candidate
+      ? '候选：' + candidate.confidence + '（来自 ' + candidate.source_name + '）'
+      : '没有可推断的候选位置，请直接在地图上标出';
+    row.innerHTML =
+      '<img loading="lazy" decoding="async" src="' + PhotoMap.esc(photo.thumb) + '" alt="" />' +
+      '<div><div class="nm">' + PhotoMap.esc(photo.name) + '</div>' +
+      '<div class="hint">' + PhotoMap.esc(hint) + '</div></div>';
+    row.addEventListener('click', function () { openLocate(photo.key); });
+    pendingList.appendChild(row);
+  });
+
+  /* 点侧栏里的照片：直接跳到它在地图上的位置（不再弹灯箱） */
+  PhotoMap.renderList(list, PHOTOS, function (index) {
+    const photo = PHOTOS[index];
+    if (!photo) return;
+    const wgs = PhotoMap.coord.convert(photo.lat, photo.lon, 'wgs84', PHOTO_SYSTEM);
+    gotoPoint(wgs.lat, wgs.lon, 17);
+  }, function (index, photo) {
+    /* 已定位的照片也能随时改位置 */
+    openLocate(photo.key);
+  });
+}
+
+/* ---------------------------------------------------------------- 分组批量定位 */
+
+/* 浮层只负责挑点，写入一律走服务端的批量接口。
+   批量写入要令牌：每张照片一个，服务端按 key 逐张校验。 */
+async function openToken(key) {
+  try {
+    const res = await fetch('/api/locate/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key, session: SESSION })
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data.token || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+async function openGroupTokens(groupId) {
+  const res = await fetch('/api/locate/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group: groupId, session: SESSION })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  return data.tokens || {};
+}
+
+/* 给一批照片一次签发令牌（整簇平移时簇里的照片既有已定位也有待确认）。 */
+async function openTokens(keys) {
+  const res = await fetch('/api/locate/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ members: keys, session: SESSION })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  return data.tokens || {};
+}
+
+async function postBatch(payload) {
+  const body = {
+    session: SESSION,
+    system: PHOTO_SYSTEM,
+    mode: payload.mode,
+    items: payload.items
+  };
+  if (payload.target) body.target = payload.target;
+  if (payload.anchor_key) body.anchor_key = payload.anchor_key;
+  const res = await fetch('/api/locate/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  version = -1;
+  await refreshNow();
+  return data;
+}
+
+function reportBatch(data) {
+  const written = (data.written || []).length;
+  const errors = data.errors || [];
+  let message = '已写入 ' + written + ' 张照片的位置';
+  if (errors.length) {
+    message += '，' + errors.length + ' 张没写成功：\n' +
+      errors.map(function (item) { return item.key + '：' + item.error; }).join('\n');
+  }
+  alert(message);
+}
+
+/* 按各自候选填充：每张照片用它自己的候选位置。 */
+async function tokensForKeys(keys) {
+  const res = await fetch('/api/locate/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ members: keys, session: SESSION })
+  });
+  const data = await res.json();
+  return data.tokens || {};
+}
+
+/* 按 key 列表套用各自候选位置（时间簇 / 合并后的地点行 / 任意勾选都走这里） */
+async function applyKeysAssign(keys) {
+  const tokens = await tokensForKeys(keys);
+  const items = [];
+  keys.forEach(function (key) {
+    const photo = PENDING.find(function (p) { return p.key === key; });
+    const candidate = photo && photo.candidate;
+    if (!candidate || !tokens[key]) return;
+    items.push({ key: key, lat: candidate.lat, lon: candidate.lon, token: tokens[key] });
+  });
+  if (!items.length) {
+    alert('这些照片都推不出候选位置，请用「整簇同点」手动指定一个点。');
+    return;
+  }
+  reportBatch(await postBatch({ mode: 'assign', items: items }));
+}
+
+async function applyGroupAssign(group) {
+  return applyKeysAssign(group.pending_members);
+}
+
+/* 整簇钉在同一个点。 */
+async function applyGroupSame(group, point) {
+  const tokens = await openGroupTokens(group.id);
+  const items = group.pending_members.map(function (key) {
+    return { key: key, token: tokens[key] };
+  });
+  if (!items.length) return;
+  reportBatch(await postBatch({ mode: 'same', items: items, target: point }));
+}
+
+/* 整簇平移：保留组内相对位置。
+   待确认的照片本身没有位置，用它的候选位置当作平移起点。 */
+async function applyGroupShift(group, point) {
+  const anchorKey = group.located_members[0];
+  if (!anchorKey) {
+    alert('这一簇里没有已定位的照片，没法按锚点平移。');
+    return;
+  }
+  const keys = group.members.slice();
+  const tokens = await openTokens(keys);
+  const items = keys.map(function (key) {
+    const item = { key: key, token: tokens[key] };
+    if (group.located_members.indexOf(key) < 0) {
+      const photo = PENDING.find(function (p) { return p.key === key; });
+      if (photo && photo.candidate) {
+        item.lat = photo.candidate.lat;
+        item.lon = photo.candidate.lon;
+      }
+    }
+    return item;
+  });
+  reportBatch(await postBatch({
+    mode: 'shift', items: items, target: point, anchor_key: anchorKey
+  }));
+}
+
+function groupTitle(group) {
+  if (!group.start) return '没有拍摄时间';
+  if (!group.end || group.end === group.start) return group.start;
+  return group.start + ' – ' + group.end;
+}
+
+/* 分簇只看时间：同一地点分开拍的几段会变成好几个簇。
+   「按地点合并」把这些簇按推断坐标归并成一条，一次处理整片地方。 */
+const MERGE_RADIUS_M = 300;
+let mergeByPlace = false;
+let GROUP_ROWS = [];
+/* 用户手动把任意几段合成一组（相册之间其实在同一地点时，只有人知道） */
+let MANUAL_MERGES = [];
+
+function distanceM(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/* 把「有待确认照片」的时间簇整理成侧栏要显示的行 */
+function buildGroupRows(actionable) {
+  const manualIds = {};
+  MANUAL_MERGES.forEach(function (merge) {
+    merge.groupIds.forEach(function (id) { manualIds[id] = true; });
+  });
+  const pool = actionable.filter(function (group) { return !manualIds[group.id]; });
+
+  const rows = mergeByPlace ? buildPlaceRows(pool) : pool.map(function (group) {
+    return {
+      kind: 'time',
+      group: group,
+      groupIds: [group.id],
+      members: (group.members || []).slice(),
+      keys: group.pending_members || [],
+      count: group.count,
+      pending: group.pending_count,
+      thumb: group.thumb,
+      guess: group.guess,
+      title: groupTitle(group),
+      range: ''
+    };
+  });
+
+  /* 手动合并出来的组放在最前面，方便连续处理 */
+  const manualRows = [];
+  MANUAL_MERGES.forEach(function (merge) {
+    const groups = merge.groupIds
+      .map(function (id) { return actionable.find(function (g) { return g.id === id; }); })
+      .filter(Boolean);
+    if (!groups.length) return;
+    const row = {
+      kind: 'manual',
+      manual: merge,
+      groups: groups,
+      groupIds: merge.groupIds.slice(),
+      members: [],
+      keys: [],
+      count: 0,
+      pending: 0,
+      thumb: groups[0].thumb,
+      guess: groups[0].guess,
+      title: '手动合并 · ' + groups.length + ' 个时间段',
+      range: (groups[0].start || '') + ' – ' + (groups[groups.length - 1].end || groups[groups.length - 1].start || '')
+    };
+    groups.forEach(function (group) {
+      row.members = row.members.concat(group.members || []);
+      row.keys = row.keys.concat(group.pending_members || []);
+      row.count += group.count;
+      row.pending += group.pending_count;
+    });
+    manualRows.push(row);
+  });
+
+  return manualRows.concat(rows);
+}
+
+function buildPlaceRows(actionable) {
+
+  /* 合并键：优先用「文件夹（相册）」——待确认照片大多没有坐标，
+     同一相册基本就是同一地点；没有文件夹的再按推断坐标 300 米内归并 */
+  const byFolder = {};
+  const placed = [];
+  const rows = [];
+
+  function addToRow(row, group) {
+    row.groups.push(group);
+    row.groupIds.push(group.id);
+    row.members = row.members.concat(group.members || []);
+    row.keys = row.keys.concat(group.pending_members || []);
+    row.count += group.count;
+    row.pending += group.pending_count;
+  }
+
+  actionable.forEach(function (group) {
+    const folder = (group.folder || '').trim();
+    if (folder) {
+      const key = folder.toLowerCase();
+      if (byFolder[key]) {
+        addToRow(byFolder[key], group);
+        return;
+      }
+      const row = {
+        kind: 'folder',
+        folder: folder,
+        groups: [group],
+        groupIds: [group.id],
+        members: (group.members || []).slice(),
+        keys: (group.pending_members || []).slice(),
+        count: group.count,
+        pending: group.pending_count,
+        thumb: group.thumb,
+        guess: group.guess,
+        title: '',
+        range: ''
+      };
+      byFolder[key] = row;
+      rows.push(row);
+      return;
+    }
+
+    if (group.guess) {
+      const hit = placed.find(function (row) {
+        return distanceM(row.lat, row.lon, group.guess.lat, group.guess.lon) <= MERGE_RADIUS_M;
+      });
+      if (hit) {
+        addToRow(hit, group);
+        return;
+      }
+      const row = {
+        kind: 'place',
+        groups: [group],
+        groupIds: [group.id],
+        members: (group.members || []).slice(),
+        lat: group.guess.lat,
+        lon: group.guess.lon,
+        keys: (group.pending_members || []).slice(),
+        count: group.count,
+        pending: group.pending_count,
+        thumb: group.thumb,
+        guess: group.guess,
+        title: '',
+        range: ''
+      };
+      placed.push(row);
+      rows.push(row);
+      return;
+    }
+
+    /* 既没有文件夹也没有坐标：单独列出，只能手动指定 */
+    rows.push({
+      kind: 'time',
+      group: group,
+      groupIds: [group.id],
+      members: (group.members || []).slice(),
+      keys: group.pending_members || [],
+      count: group.count,
+      pending: group.pending_count,
+      thumb: group.thumb,
+      guess: null,
+      title: groupTitle(group),
+      range: ''
+    });
+  });
+
+  rows.forEach(function (row) {
+    if (row.kind === 'time') return;  /* 单独列出的簇没有 groups */
+    const first = row.groups[0];
+    const last = row.groups[row.groups.length - 1];
+    const span = row.groups.length > 1
+      ? (first.start || '') + ' – ' + (last.end || last.start || '')
+      : '';
+    if (row.kind === 'folder') {
+      row.title = row.folder + (row.groups.length > 1
+        ? '（' + row.groups.length + ' 个时间段）'
+        : '');
+      row.range = span;
+    } else if (row.kind === 'place') {
+      row.title = row.groups.length > 1
+        ? '同一地点 · ' + row.groups.length + ' 个时间段'
+        : groupTitle(first);
+      row.range = span;
+    }
+  });
+  return rows;
+}
+
+function renderGroups() {
+  const host = document.getElementById('groups-list');
+  const head = document.getElementById('groups-head');
+  const applyBtn = document.getElementById('groups-apply');
+  /* 待确认 0 张的簇没有任何能做的操作（按钮全是禁用的），列出来只会淹没真正要处理的簇 */
+  const actionable = GROUPS.filter(function (group) { return group.pending_count > 0; });
+  const pickAll = document.getElementById('groups-pick-all');
+  const sameBtn = document.getElementById('groups-same');
+  const mergeBtn = document.getElementById('groups-merge');
+  const mergePicked = document.getElementById('groups-merge-picked');
+  GROUP_ROWS = buildGroupRows(actionable);
+
+  head.hidden = GROUP_ROWS.length === 0;
+  document.getElementById('groups-title').textContent = mergeByPlace ? '按地点合并' : '按时间分组';
+  document.getElementById('groups-count').textContent = String(GROUP_ROWS.length);
+  applyBtn.hidden = GROUP_ROWS.length === 0;
+  pickAll.hidden = GROUP_ROWS.length === 0;
+  sameBtn.hidden = GROUP_ROWS.length === 0;
+  mergeBtn.hidden = actionable.length === 0;
+  mergePicked.hidden = GROUP_ROWS.length === 0;
+  mergeBtn.textContent = mergeByPlace ? '按时间分组' : '按地点合并';
+  pickAll.textContent = '全选';
+  host.innerHTML = '';
+
+  GROUP_ROWS.forEach(function (info, rowIndex) {
+    const row = document.createElement('div');
+    row.className = 'group';
+    const guess = info.guess;
+    let guessText;
+    if (guess) {
+      guessText = guess.confidence + ' · ' + guess.basis;
+      if (info.kind === 'place') {
+        guessText = '约 ' + Number(info.lat).toFixed(5) + ', ' + Number(info.lon).toFixed(5) +
+          ' · ' + guess.confidence;
+      }
+    } else if (info.kind === 'folder') {
+      guessText = '这一组按文件夹归并，没有推断坐标，请手动指定一个点';
+    } else {
+      guessText = '这一簇推不出位置，需要手动指定一个点';
+    }
+    row.innerHTML =
+      '<div class="row">' +
+        (info.thumb
+          ? '<img class="thumb" src="' + PhotoMap.esc(info.thumb) + '" alt="" />'
+          : '') +
+        '<div><div class="nm">' + PhotoMap.esc(info.title) + '</div>' +
+        (info.range ? '<div class="hint">' + PhotoMap.esc(info.range) + '</div>' : '') +
+        '<div class="hint">共 ' + info.count + ' 张，待确认 ' + info.pending + ' 张</div>' +
+        '<div class="guess">' + PhotoMap.esc(guessText) + '</div></div>' +
+      '</div>' +
+      '<div class="acts"></div>';
+    const acts = row.querySelector('.acts');
+
+    function addAction(text, title, handler, disabled) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = text;
+      button.title = title;
+      button.disabled = !!disabled;
+      button.addEventListener('click', handler);
+      acts.appendChild(button);
+      return button;
+    }
+
+    addAction('各自候选', '每张照片用它自己的候选位置',
+      function () { applyKeysAssign(info.keys); }, info.pending === 0);
+    addAction('整簇同点', '这一组待确认的照片钉在同一个点',
+      function () { openLocateMany(info.keys); }, info.pending === 0);
+    /* 平移按「簇内相对位置」算，只在单个时间簇上有意义 */
+    if (info.kind === 'time') {
+      addAction('整簇平移', '整簇平移到指定位置，组内相对位置不变',
+        function () { openGroupPoint(info.group, 'shift'); }, info.count === 0);
+    }
+    if (info.kind === 'manual') {
+      addAction('取消合并', '拆回原来的时间段', function () {
+        MANUAL_MERGES = MANUAL_MERGES.filter(function (m) { return m !== info.manual; });
+        renderGroups();
+      }, false);
+    }
+
+    /* 点这一行（不是按钮）展开缩略图，用来看照片判断位置准不准 */
+    row.querySelector('.row').addEventListener('click', function () {
+      toggleGroupPhotos(row, info);
+    });
+
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.dataset.row = String(rowIndex);
+    label.appendChild(box);
+    label.appendChild(document.createTextNode('选中'));
+    acts.appendChild(label);
+
+    host.appendChild(row);
+  });
+}
+
+/* ---------------------------------------------------------------- 分组缩略图 + 预览 */
+
+function photoIndex() {
+  const map = {};
+  PHOTOS.concat(PENDING).forEach(function (photo) { if (photo.key) map[photo.key] = photo; });
+  return map;
+}
+
+function toggleGroupPhotos(row, info) {
+  const existing = row.querySelector('.group-photos');
+  if (existing) { existing.remove(); return; }
+  const pool = photoIndex();
+  const photos = (info.members || []).map(function (key) { return pool[key]; }).filter(Boolean);
+  const box = document.createElement('div');
+  box.className = 'group-photos';
+  if (!photos.length) {
+    box.innerHTML = '<div class="hint">这组没有可显示的照片</div>';
+    row.appendChild(box);
+    return;
+  }
+  photos.forEach(function (photo, index) {
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = photo.thumb || photo.marker || '';
+    img.alt = photo.name || '';
+    img.title = photo.name || '';
+    if (photo.status === 'pending') img.className = 'pending-shot';
+    img.addEventListener('click', function (event) {
+      event.stopPropagation();
+      openPreview(photos, index);
+    });
+    box.appendChild(img);
+  });
+  row.appendChild(box);
+}
+
+let previewList = [];
+let previewIndex = 0;
+
+function previewCaption(photo) {
+  const parts = [photo.name || ''];
+  if (photo.taken_at) parts.push('拍摄 ' + photo.taken_at);
+  if (photo.status === 'pending') {
+    const candidate = photo.candidate;
+    parts.push(candidate
+      ? '待确认 · 候选 ' + Number(candidate.lat).toFixed(6) + ', ' + Number(candidate.lon).toFixed(6)
+      : '待确认 · 没有候选位置');
+  } else if (typeof photo.lat === 'number') {
+    parts.push('坐标 ' + Number(photo.lat).toFixed(6) + ', ' + Number(photo.lon).toFixed(6));
+  }
+  return parts.join(' · ');
+}
+
+function showPreview() {
+  const photo = previewList[previewIndex];
+  if (!photo) return;
+  const box = document.getElementById('photo-preview');
+  box.hidden = false;
+  box.querySelector('img').src = photo.full || ('/files/full/' + photo.key);
+  box.querySelector('.cap').textContent = previewCaption(photo) +
+    (previewList.length > 1 ? '（' + (previewIndex + 1) + '/' + previewList.length + '）' : '');
+}
+
+function openPreview(photos, index) {
+  previewList = photos || [];
+  previewIndex = Math.max(0, Math.min(index || 0, previewList.length - 1));
+  showPreview();
+}
+
+function closePreview() {
+  document.getElementById('photo-preview').hidden = true;
+  previewList = [];
+}
+
+function stepPreview(delta) {
+  if (previewList.length < 2) return;
+  previewIndex = (previewIndex + delta + previewList.length) % previewList.length;
+  showPreview();
+}
+
+(function bindPreview() {
+  const box = document.getElementById('photo-preview');
+  box.querySelector('.close').addEventListener('click', closePreview);
+  box.querySelector('.nav.prev').addEventListener('click', function (event) {
+    event.stopPropagation();
+    stepPreview(-1);
+  });
+  box.querySelector('.nav.next').addEventListener('click', function (event) {
+    event.stopPropagation();
+    stepPreview(1);
+  });
+  box.addEventListener('click', function (event) {
+    if (event.target === box) closePreview();
+  });
+  document.addEventListener('keydown', function (event) {
+    if (box.hidden) return;
+    if (event.key === 'Escape') { closePreview(); return; }
+    if (event.key === 'ArrowLeft') stepPreview(-1);
+    if (event.key === 'ArrowRight') stepPreview(1);
+  });
+})();
+
+async function loadGroups() {
+  try {
+    const res = await fetch('/api/groups?system=' + encodeURIComponent(PHOTO_SYSTEM),
+                            { cache: 'no-store' });
+    const data = await res.json();
+    GROUPS = data.groups || [];
+    renderGroups();
+  } catch (err) {
+    /* 服务暂时不可用，等下一轮 */
+  }
+}
+
+/* 勾选的分组合并成一件事：
+   - 全选：一次勾上所有还有待确认照片的簇
+   - 所选同点：把这些簇里的待确认照片一起钉到同一个点（复用定位浮层 + 批量接口） */
+document.getElementById('groups-pick-all').addEventListener('click', function () {
+  const boxes = Array.prototype.slice.call(
+    document.querySelectorAll('#groups-list input[type=checkbox]')
+  );
+  if (!boxes.length) return;
+  const allChecked = boxes.every(function (box) { return box.checked; });
+  boxes.forEach(function (box) { box.checked = !allChecked; });
+  this.textContent = allChecked ? '全选' : '取消全选';
+});
+
+document.getElementById('groups-merge').addEventListener('click', function () {
+  mergeByPlace = !mergeByPlace;
+  renderGroups();
+});
+
+/* 把勾选的若干行合成一组：不同相册其实在同一地点时，由人来指定 */
+document.getElementById('groups-merge-picked').addEventListener('click', function () {
+  const boxes = Array.prototype.slice.call(
+    document.querySelectorAll('#groups-list input[type=checkbox]:checked')
+  );
+  if (boxes.length < 2) {
+    alert('至少勾选两行再合并。');
+    return;
+  }
+  const ids = [];
+  let firstRow = null;
+  boxes.forEach(function (box) {
+    const row = GROUP_ROWS[Number(box.dataset.row)];
+    if (!row) return;
+    if (!firstRow) firstRow = row;
+    (row.groupIds || []).forEach(function (id) { if (ids.indexOf(id) === -1) ids.push(id); });
+    /* 勾选里包含已有的手动合并 → 把那条并进来，别留空壳 */
+    if (row.kind === 'manual') {
+      MANUAL_MERGES = MANUAL_MERGES.filter(function (m) { return m !== row.manual; });
+    }
+  });
+  if (ids.length < 2) {
+    alert('这几行其实是同一段，不用合并。');
+    return;
+  }
+  MANUAL_MERGES.push({ groupIds: ids, thumb: firstRow ? firstRow.thumb : '' });
+  renderGroups();
+});
+
+function checkedGroupKeys() {
+  const keys = [];
+  const boxes = Array.prototype.slice.call(
+    document.querySelectorAll('#groups-list input[type=checkbox]:checked')
+  );
+  boxes.forEach(function (box) {
+    const row = GROUP_ROWS[Number(box.dataset.row)];
+    if (!row) return;
+    row.keys.forEach(function (key) { keys.push(key); });
+  });
+  return keys;
+}
+
+document.getElementById('groups-same').addEventListener('click', function () {
+  if (!document.querySelector('#groups-list input[type=checkbox]:checked')) {
+    alert('先勾选要处理的分组。');
+    return;
+  }
+  const keys = checkedGroupKeys();
+  if (!keys.length) {
+    alert('所选分组里没有待确认的照片。');
+    return;
+  }
+  openLocateMany(keys);
+});
+
+document.getElementById('groups-apply').addEventListener('click', async function () {
+  const keys = checkedGroupKeys();
+  if (!keys.length) {
+    alert('先勾选要处理的分组。');
+    return;
+  }
+  const button = this;
+  button.disabled = true;
+  try {
+    await applyKeysAssign(keys);
+  } catch (err) {
+    alert('批量写入失败：' + err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+/* ---------------------------------------------------------------- 定位确认 */
+
+const overlayEl = document.getElementById('locate');
+const locateMapEl = document.getElementById('locate-map');
+const locateCands = document.getElementById('locate-cands');
+const locateCoord = document.getElementById('locate-coord');
+const locateSearch = document.getElementById('locate-search');
+
+/* 定位用的底图：优先百度地图（带地址搜索），没有 AK 时退回高德瓦片。
+   两种底图的坐标基准不同，提交时会告诉服务端用哪个基准换算回 WGS-84。 */
+let overlayEngine = 'wgs84';
+let bmapReady = false;
+
+/* WGS-84 → GCJ-02 / BD-09 的换算放在 photo_map.js 里（PhotoMap.coord），
+   与 photonmap/coords.py 是同一套算法、同一份常量。
+   候选位置与搜索结果都是 WGS-84，画到国内底图上要先偏移。 */
+
+/* 坐标 → 当前底图的基准。source 省略时按 WGS-84 解释。 */
+function toOverlay(lat, lon, source) {
+  return PhotoMap.coord.convert(lat, lon, overlayEngine, source || 'wgs84');
+}
+
+function loadBaiduApi(ak) {
+  return new Promise(function (resolve, reject) {
+    if (window.BMap && window.BMap.Map) { resolve(); return; }
+    const script = document.createElement('script');
+    script.src = 'https://api.map.baidu.com/api?v=3.0&ak=' + encodeURIComponent(ak) +
+                 '&callback=__photonmapBaiduReady&t=' + Date.now();
+    script.onerror = function () { reject(new Error('百度地图加载失败')); };
+    window.__photonmapBaiduReady = function () { resolve(); };
+    document.head.appendChild(script);
+  });
+}
+
+/* 打开浮层前的准备：挑底图。
+
+   优先百度地图（有 AK 时自带地址搜索），没有 AK 就用高德瓦片：
+   基准 GCJ-02，境内数据比 OSM 详细得多。 */
+async function prepareOverlay() {
+  overlayEngine = 'gcj02';
+  bmapReady = false;
+  const ak = engineKey('baidu');
+  if (ak) {
+    try {
+      await loadBaiduApi(ak);
+      bmapReady = true;
+      overlayEngine = 'bd09';
+    } catch (err) {
+      bmapReady = false;
+    }
+  }
+  locateSearch.disabled = false;
+  locateSearch.placeholder = bmapReady
+    ? '搜索地址或地名，例如：杭州市西湖区断桥'
+    : '搜索地址或地名，例如：杭州市西湖区断桥（OpenStreetMap）';
+}
+
+async function openLocate(key) {
+  locateMode = 'single';
+  locateGroup = null;
+  locateTarget = null;
+  locateToken = '';
+  overlayEl.hidden = false;
+  await prepareOverlay();
+
+  const data = await fetch('/api/photos?system=' + overlayEngine, { cache: 'no-store' });
+  const payload = await data.json();
+  const photo = (payload.pending || []).find(function (p) { return p.key === key; }) ||
+                 (payload.photos || []).find(function (p) { return p.key === key; });
+  if (!photo) { closeLocate(); return; }
+  locateTarget = photo;
+  locateIsLocated = photo.status !== 'pending';
+  locateAiKey = key;
+
+  /* 换一枚一次性令牌：服务端只在浮层真的打开时才发放，
+     提交坐标时必须带上，浮层没开过的路径拿不到令牌。 */
+  locateToken = await openToken(key);
+
+  document.getElementById('locate-title').innerHTML =
+    (locateIsLocated ? '修改照片位置 ' : '确认照片位置 ') +
+    '<small>' + PhotoMap.esc(photo.name) + ' —— 拖动图上的标记到照片真正拍下的位置，或搜索地址，然后点「确认位置」。</small>';
+  document.getElementById('locate-clear').hidden = !locateIsLocated;
+  document.getElementById('locate-ai').hidden = !AI_AVAILABLE;
+  document.getElementById('locate-coord-input').value = '';
+
+  locateCands.innerHTML = '';
+  const candidates = photo.candidates || [];
+  if (candidates.length) {
+    locateCands.innerHTML = '<div style="margin-bottom:6px">换一个候选位置：</div>';
+    candidates.forEach(function (candidate) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      const minutes = Math.round(candidate.delta_seconds / 60);
+      button.textContent = candidate.confidence + ' · ' + candidate.source_name +
+        (minutes ? '（相差 ' + minutes + ' 分钟）' : '');
+      button.addEventListener('click', function () {
+        /* 候选坐标已经是浮层底图的基准（服务端按 system 换算过） */
+        setPoint(candidate.lat, candidate.lon);
+      });
+      locateCands.appendChild(button);
+    });
+  }
+
+  /* 初始点：待确认用候选位置，已定位用它自己的位置，
+     都没有就退到第一张照片（侧栏列表是库基准，要先换算）。 */
+  let point;
+  if (photo.candidate) {
+    point = photo.candidate;
+  } else if (locateIsLocated) {
+    point = { lat: photo.lat, lon: photo.lon };
+  } else {
+    const raw = PHOTOS[0] || { lat: 0, lon: 0 };
+    point = toOverlay(raw.lat, raw.lon, PHOTO_SYSTEM);
+  }
+  buildOverlayMap(point);
+  setPoint(point.lat, point.lon);
+
+  /* 拖动事件在各家 SDK 里不一定可靠，定时比对一下位置 */
+  if (locatePoll) clearInterval(locatePoll);
+  locatePoll = setInterval(checkMoved, 400);
+}
+
+/* 胶卷里多选的任意几张照片：一次性打开浮层，确认后整批钉到同一个点。 */
+async function openLocateMany(keys) {
+  keys = (keys || []).filter(Boolean);
+  if (!keys.length) return;
+  locateMode = 'multi';
+  locateGroup = null;
+  locateTarget = null;
+  locateIsLocated = false;
+  locateAiKey = '';
+  locateMembers = [];
+  locateTokens = {};
+  overlayEl.hidden = false;
+  await prepareOverlay();
+
+  let tokens = {};
+  try {
+    const res = await fetch('/api/locate/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ members: keys, session: SESSION })
+    });
+    const payload = await res.json();
+    tokens = payload.tokens || {};
+  } catch (err) {
+    closeLocate();
+    alert('打开移动浮层失败：' + err.message);
+    return;
+  }
+  const usable = keys.filter(function (k) { return tokens[k]; });
+  if (!usable.length) {
+    closeLocate();
+    alert('这些照片没有可写入的位置');
+    return;
+  }
+  locateMembers = usable;
+  locateTokens = tokens;
+
+  document.getElementById('locate-title').innerHTML =
+    '移动照片位置 <small>共 ' + usable.length + ' 张 —— 拖点或搜地址选好位置，' +
+    '然后点「确认位置」。</small>';
+  document.getElementById('locate-clear').hidden = true;
+  document.getElementById('locate-ai').hidden = true;
+  document.getElementById('locate-coord-input').value = '';
+  locateCands.innerHTML = '';
+
+  /* 初始点：优先用第一张的候选位置；没有候选就落在当前地图视野中心，
+     再不行才退到某张已定位照片（待确认照片的 lat/lon 是 0，绝不能直接用） */
+  const all = PHOTOS.concat(PENDING);
+  const first = all.find(function (p) { return p.key === usable[0]; });
+  let point = null;
+  if (first && first.status === 'pending' && first.candidate) {
+    point = toOverlay(first.candidate.lat, first.candidate.lon, PHOTO_SYSTEM);
+  }
+  if (!point) {
+    const view = await askMapView();
+    if (view) point = toOverlay(view.lat, view.lon, 'wgs84');
+  }
+  if (!point) {
+    const located = PHOTOS.find(function (p) {
+      return typeof p.lat === 'number' && (Math.abs(p.lat) > 1e-6 || Math.abs(p.lon) > 1e-6);
+    });
+    point = located
+      ? toOverlay(located.lat, located.lon, PHOTO_SYSTEM)
+      : toOverlay(31.2304, 121.4737, PHOTO_SYSTEM);
+  }
+  buildOverlayMap(point);
+  setPoint(point.lat, point.lon);
+
+  if (locatePoll) clearInterval(locatePoll);
+  locatePoll = setInterval(checkMoved, 400);
+}
+
+/* 改一整簇：浮层只负责挑一个点，写入由批量接口做。 */async function openGroupPoint(group, mode) {
+  locateMode = mode;
+  locateGroup = group;
+  locateTarget = null;
+  locateToken = '';
+  /* 整簇时用簇里的代表图来识别地名 */
+  locateAiKey = group.members[0] || '';
+  locateIsLocated = false;
+  overlayEl.hidden = false;
+  await prepareOverlay();
+
+  const title = document.getElementById('locate-title');
+  title.innerHTML = (mode === 'same' ? '给整簇定一个位置 ' : '整簇平移 ') +
+    '<small>' + PhotoMap.esc(groupTitle(group)) + ' —— ' +
+    (mode === 'same'
+      ? '拖动标记或搜索地名，选中的点会套用到这一簇的所有待确认照片。'
+      : '拖动标记或搜索地名，选中的点是整簇平移后的锚点位置，组内相对位置保持不变。') +
+    '</small>';
+  document.getElementById('locate-clear').hidden = true;
+  document.getElementById('locate-ai').hidden = !AI_AVAILABLE;
+  document.getElementById('locate-coord-input').value = '';
+  locateCands.innerHTML = '';
+
+  let point;
+  if (group.guess) {
+    point = toOverlay(group.guess.lat, group.guess.lon, PHOTO_SYSTEM);
+  } else {
+    const anchor = group.located_members.length
+      ? PHOTOS.find(function (p) { return p.key === group.located_members[0]; })
+      : null;
+    if (anchor) {
+      point = toOverlay(anchor.lat, anchor.lon, PHOTO_SYSTEM);
+    } else {
+      const view = await askMapView();
+      point = view
+        ? toOverlay(view.lat, view.lon, 'wgs84')
+        : toOverlay(31.2304, 121.4737, PHOTO_SYSTEM);
+    }
+  }
+  buildOverlayMap(point);
+  setPoint(point.lat, point.lon);
+
+  if (locatePoll) clearInterval(locatePoll);
+  locatePoll = setInterval(checkMoved, 400);
+}
+
+function buildOverlayMap(point) {
+  if (locateMap) { destroyOverlayMap(); }
+  locateMapEl.innerHTML = '';
+  if (bmapReady) {
+    const map = new BMap.Map(locateMapEl);
+    map.enableScrollWheelZoom(true);
+    const marker = new BMap.Marker(new BMap.Point(point.lon, point.lat));
+    map.addOverlay(marker);
+    marker.enableDragging();
+    locateMap = {
+      engine: 'bd09',
+      setPoint: function (lat, lon) {
+        marker.setPosition(new BMap.Point(lon, lat));
+        map.panTo(new BMap.Point(lon, lat));
+      },
+      getPoint: function () {
+        const p = marker.getPosition();
+        return { lat: p.lat, lon: p.lng };
+      },
+      search: searchBaidu,
+      destroy: function () { map.clearOverlays(); }
+    };
+  } else {
+    /* 没有百度 AK：底图用高德瓦片（GCJ-02），地址搜索用 Nominatim／Photon
+       （返回 WGS-84，落点前先偏移一次，两边才对得上）。 */
+    const map = L.map(locateMapEl).setView([point.lat, point.lon], 15);
+    const baseLayers = {};
+    AMAP_TILES.forEach(function (t) {
+      /* 混合层是两层瓦片：卫星影像 + 透明的路网标注 */
+      const parts = [L.tileLayer(t.url, {
+        maxZoom: t.maxZoom || 18,
+        attribution: t.attribution || '',
+        subdomains: t.subdomains || 'abc'
+      })];
+      if (t.overlay) {
+        parts.push(L.tileLayer(t.overlay.url, {
+          maxZoom: t.overlay.maxZoom || t.maxZoom || 18,
+          attribution: '',
+          subdomains: t.overlay.subdomains || 'abc'
+        }));
+      }
+      baseLayers[t.name] = parts.length > 1 ? L.layerGroup(parts) : parts[0];
+    });
+    const names = Object.keys(baseLayers);
+    if (names.length) {
+      baseLayers[names[0]].addTo(map);
+      if (names.length > 1) L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
+    }
+    /* 自绘一个圆点标记：Leaflet 默认图标依赖 vendor 里的 png，
+       打包/复制时容易缺，用 divIcon 最稳 */
+    const pinIcon = L.divIcon({
+      className: 'pm-locate-pin',
+      iconSize: [18, 18],
+      iconAnchor: [9, 9]
+    });
+    const marker = L.marker([point.lat, point.lon], { draggable: true, icon: pinIcon }).addTo(map);
+    locateMap = {
+      engine: 'gcj02',
+      setPoint: function (lat, lon) {
+        marker.setLatLng([lat, lon]);
+        map.setView([lat, lon], Math.max(map.getZoom(), 15));
+      },
+      getPoint: function () { return { lat: marker.getLatLng().lat, lon: marker.getLatLng().lng }; },
+      invalidateSize: function () { map.invalidateSize(); },
+      search: searchOsm,
+      destroy: function () { map.remove(); }
+    };
+  }
+  setTimeout(function () {
+    if (locateMap && locateMap.invalidateSize) locateMap.invalidateSize();
+  }, 40);
+}
+
+function destroyOverlayMap() {
+  if (locatePoll) { clearInterval(locatePoll); locatePoll = null; }
+  if (locateMap) { try { locateMap.destroy(); } catch (e) {} locateMap = null; }
+  locateInitial = null;
+}
+
+function setPoint(lat, lon) {
+  if (!locateMap) return;
+  locateMap.setPoint(lat, lon);
+  locateInitial = { lat: lat, lon: lon };
+  showCoord(lat, lon);
+}
+
+function showCoord(lat, lon) {
+  const labels = { wgs84: 'WGS-84', gcj02: 'GCJ-02', bd09: 'BD-09' };
+  locateCoord.textContent = lat.toFixed(6) + ', ' + lon.toFixed(6) +
+    '（' + (labels[overlayEngine] || overlayEngine) + '）';
+}
+
+function checkMoved() {
+  if (!locateMap || !locateInitial) return;
+  const now = locateMap.getPoint();
+  if (Math.abs(now.lat - locateInitial.lat) > 1e-9 ||
+      Math.abs(now.lon - locateInitial.lon) > 1e-9) {
+    locateInitial = { lat: now.lat, lon: now.lon };
+    showCoord(now.lat, now.lon);
+  }
+}
+
+/* 百度地址搜索 */
+function searchBaidu(keyword) {
+  if (!keyword) return;
+  const search = new BMap.PlaceSearch({
+    pageCapacity: 8,
+    onSearchComplete: function (res) {
+      const poi = res.getPoi && res.getPoi(0);
+      if (!poi) { alert('没找到「' + keyword + '」，换个说法试试'); return; }
+      setPoint(poi.point.lat, poi.point.lng);
+    }
+  });
+  search.search(keyword);
+}
+
+/* 免密钥地址搜索：走服务端的 /api/geocode（高德 → Nominatim → Photon）。
+   服务端代理是为了统一限流与缓存，也免得把 key 暴露在浏览器里。
+   返回的坐标是 WGS-84，浮层底图可能是 GCJ-02／BD-09，落点前先换算。 */
+async function searchOsm(keyword) {
+  if (!keyword) return;
+  const button = document.getElementById('locate-search-go');
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/geocode?q=' + encodeURIComponent(keyword) +
+                            '&engine=' + encodeURIComponent(currentEngine));
+    const data = await res.json();
+    const hits = (data && data.results) || [];
+    if (!hits.length) {
+      alert('没找到「' + keyword + '」，换个说法试试');
+      return;
+    }
+    const moved = toOverlay(hits[0].lat, hits[0].lon);
+    setPoint(moved.lat, moved.lon);
+  } catch (err) {
+    alert('搜索失败：' + err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById('locate-search-go').addEventListener('click', function () {
+  if (locateMap && locateMap.search) locateMap.search(locateSearch.value.trim());
+});
+
+/* AI 识别：模型只给地名，地名再走一次地理编码换成坐标。 */
+document.getElementById('locate-ai').addEventListener('click', async function () {
+  if (!locateAiKey) return;
+  const button = this;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = '识别中…';
+  try {
+    const res = await fetch('/api/ai/locate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: locateAiKey })
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error('HTTP ' + res.status + ' ' + detail.slice(0, 120));
+    }
+    const data = await res.json();
+    const names = data.suggestions || [];
+    if (!names.length) {
+      alert('这张照片里没看出明显的地点线索，换一张试试。');
+      return;
+    }
+    locateCands.innerHTML = '<div style="margin-bottom:6px">AI 猜的地方（点一个去查坐标）：</div>';
+    names.forEach(function (name) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.textContent = name;
+      item.addEventListener('click', function () {
+        locateSearch.value = name;
+        if (locateMap && locateMap.search) locateMap.search(name);
+      });
+      locateCands.appendChild(item);
+    });
+  } catch (err) {
+    alert('AI 识别失败：' + err.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+});
+
+locateSearch.addEventListener('keydown', function (event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  if (locateMap && locateMap.search) locateMap.search(locateSearch.value.trim());
+});
+
+function closeLocate() {
+  destroyOverlayMap();
+  overlayEl.hidden = true;
+  locateTarget = null;
+  locateToken = '';
+  locateMode = 'single';
+  locateGroup = null;
+  locateMembers = [];
+  locateTokens = {};
+  document.getElementById('locate-ok').blur();
+  document.getElementById('locate-cancel').blur();
+}
+
+document.getElementById('locate-cancel').addEventListener('click', closeLocate);
+
+document.getElementById('locate-ok').addEventListener('click', async function () {
+  /* 只有浮层确实开着时才写入 */
+  if (overlayEl.hidden) return;
+  if (!locateMap) return;
+  const point = locateMap.getPoint();
+  const button = this;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '保存中…';
+  try {
+    if (locateMode === 'single') {
+      if (!locateTarget) throw new Error('没有选中的照片');
+      if (!locateToken) {
+        alert('这个页面没有拿到定位令牌，请刷新页面后再试。');
+        return;
+      }
+      const res = await fetch('/api/locate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: locateTarget.key,
+          lat: point.lat,
+          lon: point.lon,
+          system: overlayEngine,
+          session: SESSION,
+          token: locateToken
+        })
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    } else if (locateMode === 'multi') {
+      /* 多选：整批钉到浮层当前点（服务端按 system 折回 WGS-84） */
+      const items = locateMembers.map(function (k) {
+        return { key: k, token: locateTokens[k] };
+      });
+      const res = await fetch('/api/locate/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'same',
+          target: { lat: point.lat, lon: point.lon },
+          system: overlayEngine,
+          items: items,
+          session: SESSION
+        })
+      });
+      const data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (data.errors && data.errors.length) {
+        alert('有 ' + data.errors.length + ' 张没有写成功：' + data.errors[0].error);
+      }
+    } else if (locateMode === 'same') {
+      /* 浮层底图的基准换算回列表用的基准 */
+      const target = PhotoMap.coord.convert(point.lat, point.lon, PHOTO_SYSTEM, overlayEngine);
+      await applyGroupSame(locateGroup, target);
+    } else if (locateMode === 'shift') {
+      const target = PhotoMap.coord.convert(point.lat, point.lon, PHOTO_SYSTEM, overlayEngine);
+      await applyGroupShift(locateGroup, target);
+    }
+    closeLocate();
+    version = -1;   // 强制下次轮询拉取最新数据
+    await refreshNow();
+  } catch (err) {
+    const message = err.message === 'HTTP 409'
+      ? '服务已经重启过，请刷新页面后再试。'
+      : '保存位置失败：' + err.message;
+    alert(message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+});
+
+/* 清除定位：删掉人工标定的位置，照片退回相机 GPS（或回到待确认）。 */
+document.getElementById('locate-clear').addEventListener('click', async function () {
+  if (overlayEl.hidden || !locateTarget || locateMode !== 'single') return;
+  const button = this;
+  button.disabled = true;
+  try {
+    const token = await openToken(locateTarget.key);
+    if (!token) throw new Error('这个页面没有拿到定位令牌，请刷新页面后再试。');
+    const res = await fetch('/api/locate/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key: locateTarget.key,
+        token: token,
+        session: SESSION
+      })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    closeLocate();
+    version = -1;
+    await refreshNow();
+  } catch (err) {
+    alert('清除位置失败：' + err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+/* 直接输入经纬度：按当前底图的基准解释。 */
+document.getElementById('locate-coord-input').addEventListener('keydown', function (event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  const text = this.value.replace(/，/g, ',');
+  const parts = text.split(',');
+  if (parts.length !== 2) {
+    alert('坐标格式：纬度, 经度');
+    return;
+  }
+  const lat = parseFloat(parts[0]);
+  const lon = parseFloat(parts[1]);
+  if (!isFinite(lat) || !isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    alert('坐标超出范围');
+    return;
+  }
+  setPoint(lat, lon);
+});
+
+/* 主地图里点了「?」标记 → 打开同一个确认浮层 */
+window.addEventListener('message', function (event) {
+  const data = event.data;
+  if (!data) return;
+  if (data.type === 'photonmap:view' && viewRequestResolve) {
+    const resolve = viewRequestResolve;
+    viewRequestResolve = null;
+    resolve({ lat: data.lat, lon: data.lon });
+    return;
+  }
+  if (data.type === 'photonmap:pending-click') {
+    const photo = PENDING.find(function (p) { return p.key === data.key; });
+    if (photo) openLocate(photo.key);
+    return;
+  }
+  /* 胶卷里多选后点「移动到…」 */
+  if (data.type === 'photonmap:move-photos') {
+    openLocateMany(data.keys || []);
+    return;
+  }
+  /* 主地图上把单张照片拖到了新位置，用户点了「保存」 */
+  if (data.type === 'photonmap:drag-move') {
+    saveDraggedPhoto(data);
+  }
+});
+
+/* ---------------------------------------------------------------- 分隔条 */
+
+const splitter = document.getElementById('splitter');
+
+function applySideWidth(width) {
+  const max = Math.max(220, window.innerWidth - 320);
+  const w = Math.min(Math.max(width, 220), max);
+  document.documentElement.style.setProperty('--side-w', w + 'px');
+  try { localStorage.setItem('photonmap.sideWidth', String(w)); } catch (e) {}
+}
+
+(function restoreSideWidth() {
+  let saved = 0;
+  try { saved = Number(localStorage.getItem('photonmap.sideWidth')) || 0; } catch (e) {}
+  if (saved) applySideWidth(saved);
+})();
+
+/* 单击分隔条 = 侧栏收起/展开（吸边）；拖动仍然是调宽度 */
+let sideCollapsed = false;
+let lastSideWidth = 0;
+
+function toggleSidebar() {
+  if (sideCollapsed) {
+    sideCollapsed = false;
+    document.body.classList.remove('side-collapsed');
+    applySideWidth(lastSideWidth || 300);
+  } else {
+    const width = document.getElementById('side').getBoundingClientRect().width;
+    if (width > 0) lastSideWidth = width;
+    sideCollapsed = true;
+    document.body.classList.add('side-collapsed');
+  }
+}
+
+splitter.addEventListener('mousedown', function (event) {
+  event.preventDefault();
+  splitter.classList.add('dragging');
+  const startX = event.clientX;
+  const startWidth = document.getElementById('side').getBoundingClientRect().width;
+  let moved = false;
+
+  function onMove(e) {
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 3) moved = true;
+    if (!moved) return;
+    if (sideCollapsed) {
+      /* 从收起的边缘往右拖 = 展开并跟着鼠标定宽 */
+      sideCollapsed = false;
+      document.body.classList.remove('side-collapsed');
+      applySideWidth(dx);
+      return;
+    }
+    applySideWidth(startWidth + dx);
+  }
+  function onUp() {
+    splitter.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    if (!moved) toggleSidebar();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
+
+/* ---------------------------------------------------------------- 轮询 */
+
+async function refreshNow() {
+  const res = await fetch('/api/photos', { cache: 'no-store' });
+  const data = await res.json();
+  if (data.version !== version) {
+    version = data.version;
+    PHOTOS = data.photos || [];
+    PENDING = data.pending || [];
+    PHOTO_SYSTEM = data.system || 'wgs84';
+    renderLists();
+    await loadGroups();
+  }
+}
+
+async function poll() {
+  try {
+    await refreshNow();
+  } catch (err) {
+    /* 服务暂时不可用，等下一轮 */
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+buildTabs();
+frame.src = engineSrc(currentEngine);
+poll();
+</script>
+</body>
+</html>

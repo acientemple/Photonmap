@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>照片地图 · 百度地图</title>
+{% if not options.ak %}
+<style>
+  #warn { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5;
+          background: #fff3cd; color: #664d03; padding: 10px 16px; border-radius: 6px; font-size: 13px; }
+</style>
+{% endif %}
+<link rel="stylesheet" href="{{ asset_prefix }}/photo_map.css" />
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  #map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+  {% if not options.live %}
+  #map { left: 300px; }
+  #side { position: absolute; left: 0; top: 0; bottom: 0; width: 300px; overflow-y: auto;
+          background: #101418; color: #e8eaed; border-right: 1px solid #262b31; }
+  #side h1 { font-size: 15px; padding: 14px 16px; margin: 0; font-weight: 600; }
+  #side p.count { font-size: 12px; color: #9aa0a6; padding: 0 16px 12px; margin: 0; }
+  {% endif %}
+</style>
+</head>
+<body>
+{% if not options.ak %}
+<div id="warn">未检测到百度地图 AK，地图无法加载。请设置环境变量 BAIDU_MAP_AK 后重新导出。</div>
+{% endif %}
+{% if not options.live %}
+<div id="side">
+  <h1>照片地图</h1>
+  <p class="count">共 {{ photos|length }} 张照片</p>
+  <div id="list"></div>
+</div>
+{% endif %}
+<div id="map"></div>
+<div class="pm-drag-bar" id="pm-drag-bar" hidden>
+  <span class="pm-drag-text">移动到此处？</span>
+  <button type="button" class="pm-drag-save">保存</button>
+  <button type="button" class="pm-drag-cancel">取消</button>
+</div>
+
+<script type="text/javascript" src="https://api.map.baidu.com/api?v=3.0&ak={{ options.ak }}"></script>
+<script src="{{ asset_prefix }}/photo_map.js"></script>
+<script>
+const LIVE = {{ options.live|tojson }};
+let PHOTOS = {{ photos|tojson }};
+let PENDING = {{ (pending or [])|tojson }};
+const COORD_LABEL = {{ coord_label|tojson }};
+const COORD_SYSTEM = {{ coord_system|tojson }};
+const POLL_MS = {{ poll_ms|tojson }};
+
+const map = new BMap.Map("map");
+map.enableScrollWheelZoom(true);
+map.addControl(new BMap.NavigationControl());
+map.addControl(new BMap.ScaleControl());
+
+/* 底图类型：普通 / 卫星 / 混合。
+   MapTypeControl 需要先 setCurrentCity 才会出现。 */
+try {
+  map.setCurrentCity("北京");
+  map.addControl(new BMap.MapTypeControl({
+    type: BMAP_MAPTYPE_CONTROL_DROPDOWN,
+    mapTypeIds: [BMAP_NORMAL_MAP, BMAP_SATELLITE_MAP, BMAP_HYBRID_MAP]
+  }));
+} catch (err) {
+  /* 控件不可用时不影响其它功能 */
+}
+
+const list = document.getElementById('list');
+const lightbox = new PhotoMap.Lightbox(PHOTOS, { coordLabel: COORD_LABEL, mapLabel: COORD_LABEL });
+
+/* 地图适配器：把三套地图各自的坐标/像素 API 抹平成同一套接口 */
+const adapter = {
+  container: document.getElementById('map'),
+  getZoom: function () { return map.getZoom(); },
+  toPixel: function (lat, lon) {
+    const px = map.pointToOverlayPixel(new BMap.Point(lon, lat));
+    return px ? { x: px.x, y: px.y } : null;
+  },
+  fromPixel: function (x, y) {
+    /* 当前版本的百度 API 没有导出 BMap.OverlayPixel，
+       但 overlayPixelToPoint 只读取入参的 x/y，普通对象即可。 */
+    const pt = map.overlayPixelToPoint({x: x, y: y});
+    return pt ? { lat: pt.lat, lon: pt.lng } : null;
+  },
+  createMarker: function (lat, lon, photo, onClick, zIndexOffset) {
+    const icon = new BMap.Icon(photo.marker, new BMap.Size(64, 64), { anchor: new BMap.Size(32, 32) });
+    const marker = new BMap.Marker(new BMap.Point(lon, lat), { icon: icon });
+    marker.addEventListener("click", onClick);
+    map.addOverlay(marker);
+    /* 百度的标记没有 zIndexOffset，只能把待确认的标记压到最底 */
+    if (zIndexOffset && zIndexOffset < 0) {
+      if (typeof marker.setTop === 'function') marker.setTop(false);
+      if (typeof marker.setZIndex === 'function') marker.setZIndex(1);
+    }
+    return marker;
+  },
+  setMarkerPosition: function (marker, lat, lon) { marker.setPosition(new BMap.Point(lon, lat)); },
+  /* 单张照片的标记可以拖：拖完回调新位置，由页面弹确认条 */
+  setMarkerDraggable: function (marker, draggable, onDrop) {
+    if (!marker) return;
+    if (draggable) {
+      marker.enableDragging();
+      marker.__pmDrop = function () {
+        const p = marker.getPosition();
+        onDrop({ lat: p.lat, lon: p.lng });
+      };
+      marker.removeEventListener('dragend', marker.__pmDrop);
+      marker.addEventListener('dragend', marker.__pmDrop);
+    } else {
+      marker.disableDragging();
+      if (marker.__pmDrop) { marker.removeEventListener('dragend', marker.__pmDrop); marker.__pmDrop = null; }
+    }
+  },
+  setMarkerVisible: function (marker, visible) {
+    if (visible) marker.show(); else marker.hide();
+  },
+  removeMarker: function (marker) { map.removeOverlay(marker); },
+  onZoomChange: function (cb) {
+    map.addEventListener("zoomend", cb);
+    return function () { map.removeEventListener("zoomend", cb); };
+  },
+  onMove: function (cb) {
+    map.addEventListener("moving", cb);
+    return function () { map.removeEventListener("moving", cb); };
+  }
+};
+
+/* 3D 视角：百度的 v3.0 没有 setTilt（那是 JS API GL 的能力），
+   所以这里先探测，探测不到就不显示按钮。 */
+let tiltOn = false;
+if (typeof map.setTilt === 'function') {
+  const tiltButton = document.createElement('button');
+  tiltButton.type = 'button';
+  tiltButton.className = 'pm-tool';
+  tiltButton.textContent = '3D';
+  tiltButton.title = '倾斜视角';
+  tiltButton.addEventListener('click', function () {
+    tiltOn = !tiltOn;
+    tiltButton.classList.toggle('pm-tool-on', tiltOn);
+    map.setTilt(tiltOn ? 45 : 0);
+  });
+  map.getContainer().appendChild(tiltButton);
+}
+
+/* 隐藏照片标记：有时需要看清底图细节 */
+let markersHidden = false;
+const hidePhotosButton = document.createElement('button');
+hidePhotosButton.type = 'button';
+hidePhotosButton.className = 'pm-tool';
+hidePhotosButton.textContent = '照片';
+hidePhotosButton.title = '隐藏/显示地图上的照片标记';
+hidePhotosButton.addEventListener('click', function () {
+  markersHidden = !markersHidden;
+  document.body.classList.toggle('pm-hide-markers', markersHidden);
+  hidePhotosButton.classList.toggle('pm-tool-on', markersHidden);
+});
+map.getContainer().appendChild(hidePhotosButton);
+
+let currentCluster = null;
+
+const strip = new PhotoMap.Filmstrip(PHOTOS, {
+  onPick: function (k, photoIndex, indices) {
+    /* 用胶卷当前解析出的下标：打开时记的簇下标可能在照片列表替换后已经漂了 */
+    const group = (indices && indices.length) ? indices : [photoIndex];
+    const subset = group.map(function (idx) { return PHOTOS[idx]; }).filter(Boolean);
+    const at = group.indexOf(photoIndex);
+    lightbox.setPhotos(subset, at >= 0 ? at : 0);
+  },
+  onClose: function () { currentCluster = null; },
+  /* 胶卷多选后交给壳页面开「移动到…」浮层 */
+  canMove: LIVE,
+  onMoveSelected: LIVE ? function (indices) {
+    const keys = indices.map(function (i) { return PHOTOS[i] && PHOTOS[i].key; })
+                        .filter(Boolean);
+    if (!keys.length) return;
+    window.parent.postMessage({ type: 'photonmap:move-photos', keys: keys }, '*');
+  } : null
+});
+
+const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
+  gap: 80,
+  onSelect: function (photoIndex, group) {
+    if (list) PhotoMap.highlight(list, photoIndex);
+    if (group.length < 2) {
+      lightbox.open(photoIndex);
+      return;
+    }
+    currentCluster = group;
+    strip.open(group);
+  },
+  /* 单张照片的标记可以拖动改位置；松手先弹确认条 */
+  onDrag: LIVE ? onPhotoDragged : null
+});
+
+/* 待确认定位的照片：按候选位置显示一个带「?」角标的标记 */
+const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
+  onSelect: function (photoIndex, photo) {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, '*');
+    }
+  }
+});
+
+function fitAll() {
+  if (!PHOTOS.length) return;
+  if (PhotoMap.coordCount(PHOTOS) === 1) {
+    map.centerAndZoom(new BMap.Point(PHOTOS[0].lon, PHOTOS[0].lat), 15);
+  } else {
+    map.setViewport(PHOTOS.map(p => new BMap.Point(p.lon, p.lat)), { margins: [40, 40, 40, 40] });
+  }
+}
+
+let fitted = false;
+
+function applyPhotos(rows, pendingRows) {
+  PHOTOS = rows;
+  PENDING = pendingRows || [];
+  lightbox.setAllPhotos(PHOTOS);
+  strip.setPhotos(PHOTOS);
+  if (list) {
+    const scroll = list.scrollTop;
+    PhotoMap.renderList(list, PHOTOS, function (i) {
+      lightbox.open(i);
+      map.panTo(new BMap.Point(PHOTOS[i].lon, PHOTOS[i].lat));
+    });
+    list.scrollTop = scroll;
+  }
+  clusterView.setPhotos(PHOTOS);
+  pendingView.setPhotos(pendingRows || []);
+  if (!fitted && PHOTOS.length) {
+    fitted = true;
+    fitAll();
+  }
+}
+
+{% if not options.live %}
+if (list) {
+  PhotoMap.renderList(list, PHOTOS, function (i) {
+    lightbox.open(i);
+    map.panTo(new BMap.Point(PHOTOS[i].lon, PHOTOS[i].lat));
+  });
+}
+fitAll();
+{% else %}
+let version = {{ version|tojson }};
+
+async function poll() {
+  try {
+    const res = await fetch('/api/photos?system=' + COORD_SYSTEM, { cache: 'no-store' });
+    const data = await res.json();
+    if (data.version !== version) {
+      version = data.version;
+      applyPhotos(data.photos || [], data.pending || []);
+    }
+  } catch (err) {
+    /* 服务暂时不可用，等下一轮 */
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+applyPhotos(PHOTOS, PENDING);
+poll();
+{% endif %}
+
+/* ---------------------------------------------------------------- 拖动标记改位置 */
+let dragPending = null;
+const dragBar = document.getElementById('pm-drag-bar');
+const dragText = dragBar.querySelector('.pm-drag-text');
+const dragSave = dragBar.querySelector('.pm-drag-save');
+const dragCancel = dragBar.querySelector('.pm-drag-cancel');
+
+function onPhotoDragged(photoIndex, point) {
+  if (!LIVE) return;
+  const photo = PHOTOS[photoIndex];
+  if (!photo || !photo.key) return;
+  dragPending = {
+    index: photoIndex,
+    key: photo.key,
+    lat: point.lat,
+    lon: point.lon,
+    from: [photo.lat, photo.lon]
+  };
+  dragText.textContent = '移动到 ' + point.lat.toFixed(6) + ', ' + point.lon.toFixed(6) + '？';
+  dragSave.disabled = false;
+  dragCancel.disabled = false;
+  dragBar.hidden = false;
+}
+
+function cancelDrag() {
+  if (dragPending) {
+    const handle = clusterView.markers[dragPending.index];
+    if (handle && adapter.setMarkerPosition) {
+      adapter.setMarkerPosition(handle, dragPending.from[0], dragPending.from[1]);
+    }
+  }
+  dragPending = null;
+  dragBar.hidden = true;
+}
+
+dragSave.addEventListener('click', function () {
+  if (!dragPending) return;
+  const pending = dragPending;
+  dragSave.disabled = true;
+  dragCancel.disabled = true;
+  dragText.textContent = '保存中…';
+  window.parent.postMessage({
+    type: 'photonmap:drag-move',
+    key: pending.key,
+    lat: pending.lat,
+    lon: pending.lon,
+    system: COORD_SYSTEM
+  }, '*');
+});
+
+dragCancel.addEventListener('click', cancelDrag);
+
+/* 壳页面来的消息 */
+window.addEventListener('message', function (event) {
+  const data = event.data;
+  if (!data) return;
+  if (data.type === 'photonmap:move-result') {
+    if (!dragPending) return;
+    if (data.ok) {
+      dragPending = null;
+      dragBar.hidden = true;
+    } else {
+      alert('保存失败：' + (data.error || '未知错误'));
+      cancelDrag();
+    }
+    return;
+  }
+  /* 地址搜索的结果：给的是 WGS-84，百度底图是 BD-09，要换算过去 */
+  if (data.type === 'photonmap:goto') {
+    const point = PhotoMap.coord.convert(data.lat, data.lon, COORD_SYSTEM);
+    map.centerAndZoom(new BMap.Point(point.lon, point.lat), data.zoom || 16);
+    return;
+  }
+  /* 壳页面问「地图现在看的是哪儿」→ 回 WGS-84 中心点 */
+  if (data.type === 'photonmap:get-view') {
+    const center = map.getCenter();
+    const wgs = PhotoMap.coord.convert(center.lat, center.lng, 'wgs84', COORD_SYSTEM);
+    window.parent.postMessage({ type: 'photonmap:view', lat: wgs.lat, lon: wgs.lon }, '*');
+    return;
+  }
+  /* 壳页面点了侧边栏里的照片 → 由这边打开灯箱 */
+  if (data.type === 'photonmap:open-photo') {
+    const index = PHOTOS.findIndex(function (p) { return p.key === data.key; });
+    if (index >= 0) lightbox.open(index);
+  }
+});
+</script>
+</body>
+</html>

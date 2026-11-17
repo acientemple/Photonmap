@@ -1,0 +1,446 @@
+/* 照片地图的公共样式：标记缩略图、侧边栏列表、大图灯箱。 */
+
+.pm-marker-img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, .9);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .45);
+  background: #222;
+  cursor: pointer;
+  transition: transform .12s ease-out, box-shadow .12s ease-out;
+}
+
+.pm-marker-img:hover {
+  transform: scale(1.12);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .55);
+}
+
+/* 侧边栏列表 */
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+}
+
+.item:hover, .item.active { background: rgba(255, 255, 255, .08); }
+
+.item img {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #222;
+  flex: none;
+}
+
+.item .noimg {
+  width: 52px;
+  height: 52px;
+  border-radius: 4px;
+  background: #222;
+  flex: none;
+}
+
+.item .nm {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e8eaed;
+  word-break: break-all;
+}
+
+/* 列表项上的次级操作（改位置） */
+.item .pm-edit {
+  margin-left: auto;
+  flex: none;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: #c3c9d0;
+  background: #1d242b;
+  border: 1px solid #2f3740;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.item .pm-edit:hover { background: #262e37; }
+
+/* 大图灯箱 */
+.pm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 12, .92);
+  display: none;
+  z-index: 9999;
+  align-items: stretch;
+}
+
+.pm-backdrop.pm-open { display: flex; }
+
+.pm-stage {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+
+.pm-stage.pm-dragging { cursor: grabbing; }
+
+.pm-full {
+  max-width: 92%;
+  max-height: 92%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  transition: transform .08s ease-out;
+}
+
+.pm-full.pm-zoomed { cursor: grab; transition: none; }
+
+.pm-panel {
+  width: 320px;
+  flex: none;
+  background: #12161b;
+  border-left: 1px solid #262b31;
+  color: #e8eaed;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.pm-kv { margin-bottom: 12px; }
+
+.pm-kv span {
+  display: block;
+  font-size: 11px;
+  color: #9aa0a6;
+  margin-bottom: 2px;
+}
+
+.pm-kv b {
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.pm-tools { display: flex; gap: 8px; }
+
+.pm-tools button {
+  flex: 1;
+  padding: 7px 0;
+  font-size: 14px;
+  color: #e8eaed;
+  background: #232a31;
+  border: 1px solid #333b44;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pm-tools button:hover { background: #2e373f; }
+
+.pm-actions { display: flex; gap: 8px; }
+
+.pm-btn {
+  display: inline-block;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #0b1220;
+  background: #6ea8fe;
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.pm-btn:hover { background: #8ab9ff; }
+
+.pm-nav, .pm-close {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 0, 0, .45);
+  color: #fff;
+  border: none;
+  font-size: 30px;
+  line-height: 1;
+  width: 44px;
+  height: 62px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.pm-prev { left: 14px; }
+.pm-next { right: 344px; }
+
+.pm-nav:hover, .pm-close:hover { background: rgba(0, 0, 0, .7); }
+
+.pm-close {
+  top: 16px;
+  left: 16px;
+  transform: none;
+  width: 36px;
+  height: 36px;
+  font-size: 24px;
+  border-radius: 50%;
+}
+
+.pm-counter {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  color: #cfd3d8;
+  font-size: 12px;
+  background: rgba(0, 0, 0, .5);
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+/* 聚合标记的数量角标 */
+.pm-cluster-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 700;
+  overflow: hidden;
+}
+
+.pm-badge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: rgba(12, 18, 26, .88);
+  border: 2px solid #6ea8fe;
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+}
+
+/* 待确认定位：位置只是猜测，用虚线边框和问号跟已确认的区分开 */
+.pm-pending-badge {
+  background: rgba(38, 26, 8, .9);
+  border: 2px dashed #f0a63c;
+  color: #ffd79a;
+}
+
+/* 地图上的小工具按钮（3D 视角等） */
+.pm-tool {
+  position: absolute;
+  right: 10px;
+  bottom: 34px;
+  z-index: 1000;
+  min-width: 34px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #3a424c;
+  border-radius: 4px;
+  background: rgba(16, 20, 24, .92);
+  color: #e8eaed;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.pm-tool:hover { background: #262e37; }
+.pm-tool-on { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
+
+/* 胶卷视图 */
+.pm-strip {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 800;
+  display: none;
+  background: rgba(16, 20, 24, .96);
+  border-top: 1px solid #262b31;
+  padding: 12px 14px 14px;
+}
+
+.pm-strip.pm-open { display: block; }
+
+.pm-strip-close {
+  position: absolute;
+  top: -12px;
+  right: 14px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: #2a323b;
+  color: #e8eaed;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pm-strip-close:hover { background: #39434e; }
+
+.pm-strip-track {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.pm-strip-item {
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.pm-strip-item img {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 2px solid rgba(255, 255, 255, .85);
+  background: #222;
+  transition: transform .12s ease-out;
+}
+
+.pm-strip-item:hover img { transform: scale(1.08); }
+
+/* 胶卷工具栏：平时只显示「改变位置」，进入选择态后换成勾选操作 */
+.pm-strip-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 8px;
+}
+
+.pm-strip-bar .pm-strip-info {
+  flex: 1;
+  font-size: 12px;
+  color: #9aa0a6;
+}
+
+.pm-strip-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #1d242b;
+  color: #e8eaed;
+  border: 1px solid #2f3740;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pm-strip-btn:hover:not(:disabled) { background: #262e37; }
+.pm-strip-btn:disabled { opacity: .45; cursor: not-allowed; }
+.pm-strip-bar .pm-strip-apply {
+  background: #1d4e86;
+  border-color: #6ea8fe;
+  color: #fff;
+}
+.pm-strip-bar .pm-strip-apply:disabled { background: #1d242b; border-color: #2f3740; color: #e8eaed; }
+
+/* 选择态：缩略图右上角打勾，选中的描边高亮 */
+.pm-strip.pm-selecting .pm-strip-item { position: relative; }
+.pm-strip.pm-selecting .pm-strip-item::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .85);
+  background: rgba(16, 20, 24, .6);
+}
+.pm-strip-item.pm-selected::after {
+  content: '✓';
+  color: #101418;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  background: #6ea8fe;
+  border-color: #6ea8fe;
+}
+.pm-strip-item.pm-selected img { border-color: #6ea8fe; }
+
+/* 拖动标记后的确认条 */
+.pm-drag-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  color: #e8eaed;
+  background: rgba(16, 20, 24, .96);
+  border: 1px solid #2f3740;
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .35);
+}
+.pm-drag-bar[hidden] { display: none; }
+.pm-drag-bar .pm-drag-save {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #1d4e86;
+  color: #fff;
+  border: 1px solid #6ea8fe;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pm-drag-bar .pm-drag-cancel {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #1d242b;
+  color: #e8eaed;
+  border: 1px solid #2f3740;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pm-drag-bar button:disabled { opacity: .5; cursor: not-allowed; }
+
+@media (max-width: 760px) {
+  .pm-backdrop.pm-open { flex-direction: column; }
+  .pm-panel { width: auto; border-left: none; border-top: 1px solid #262b31; max-height: 42%; }
+  .pm-next { right: 14px; }
+}
+
+/* 「隐藏照片」时把标记和角标都藏起来，只留底图 */
+body.pm-hide-markers .leaflet-marker-pane,
+body.pm-hide-markers .pm-cluster-layer,
+body.pm-hide-markers .BMap_Marker,
+body.pm-hide-markers .BMap_Label { display: none !important; }
+
+/* 地图角落的小工具按钮（仅百度用：没有图层控件可以挂） */
+.pm-tool {
+  position: absolute;
+  top: 84px;
+  left: 10px;
+  z-index: 1000;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  color: #e8eaed;
+  background: rgba(16, 20, 24, .88);
+  border: 1px solid #2f3740;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pm-tool:hover { background: #262e37; }
+.pm-tool-on { background: #1d4e86; border-color: #6ea8fe; color: #fff; }

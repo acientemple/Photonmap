@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>照片地图 · Google Maps</title>
+{% if not options.api_key %}
+<style>
+  #warn { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5;
+          background: #fff3cd; color: #664d03; padding: 10px 16px; border-radius: 6px; font-size: 13px; }
+</style>
+{% endif %}
+<link rel="stylesheet" href="{{ asset_prefix }}/photo_map.css" />
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  #map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+  {% if not options.live %}
+  #map { left: 300px; }
+  #side { position: absolute; left: 0; top: 0; bottom: 0; width: 300px; overflow-y: auto;
+          background: #101418; color: #e8eaed; border-right: 1px solid #262b31; }
+  #side h1 { font-size: 15px; padding: 14px 16px; margin: 0; font-weight: 600; }
+  #side p.count { font-size: 12px; color: #9aa0a6; padding: 0 16px 12px; margin: 0; }
+  {% endif %}
+</style>
+</head>
+<body>
+{% if not options.api_key %}
+<div id="warn">未检测到 Google Maps API Key，地图无法加载。请设置环境变量 GOOGLE_MAPS_API_KEY 后重新导出。</div>
+{% endif %}
+{% if not options.live %}
+<div id="side">
+  <h1>照片地图</h1>
+  <p class="count">共 {{ photos|length }} 张照片</p>
+  <div id="list"></div>
+</div>
+{% endif %}
+<div id="map"></div>
+
+<script src="https://maps.googleapis.com/maps/api/js?key={{ options.api_key }}&language=zh-CN"></script>
+<script src="{{ asset_prefix }}/photo_map.js"></script>
+<script>
+const LIVE = {{ options.live|tojson }};
+let PHOTOS = {{ photos|tojson }};
+const PENDING = {{ (pending or [])|tojson }};
+const COORD_LABEL = {{ coord_label|tojson }};
+const COORD_SYSTEM = {{ coord_system|tojson }};
+const POLL_MS = {{ poll_ms|tojson }};
+
+const map = new google.maps.Map(document.getElementById('map'), {
+  center: {lat: 0, lng: 0}, zoom: 2, mapTypeControl: false
+});
+
+/* 底图类型：街道 / 卫星 / 混合 / 地形 */
+map.addControl(new google.maps.MapTypeControl({
+  mapTypeIds: [
+    google.maps.MapTypeId.ROADMAP,
+    google.maps.MapTypeId.SATELLITE,
+    google.maps.MapTypeId.HYBRID,
+    google.maps.MapTypeId.TERRAIN
+  ],
+  position: google.maps.ControlPosition.TOP_RIGHT
+}));
+
+const list = document.getElementById('list');
+const lightbox = new PhotoMap.Lightbox(PHOTOS, { coordLabel: COORD_LABEL, mapLabel: COORD_LABEL });
+
+/* Google 的投影接口（MapProjection）方法名在版本间反复变动，
+   这里直接按 Web Mercator 自己换算容器像素，只依赖 getCenter()/getZoom()。
+   实测与 Google 渲染出的标记位置误差 < 1px。 */
+function mercatorWorld(lat, lon, zoom) {
+  const scale = 256 * Math.pow(2, zoom);
+  const sin = Math.sin(lat * Math.PI / 180);
+  return {
+    x: (lon + 180) / 360 * scale,
+    y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale
+  };
+}
+
+function mercatorLatLon(x, y, zoom) {
+  const scale = 256 * Math.pow(2, zoom);
+  const n = Math.PI - 2 * Math.PI * y / scale;
+  return {
+    lat: 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))),
+    lon: x / scale * 360 - 180
+  };
+}
+
+/* 地图适配器：把三套地图各自的坐标/像素 API 抹平成同一套接口 */
+const adapter = {
+  container: document.getElementById('map'),
+  getZoom: function () { return map.getZoom(); },
+  toPixel: function (lat, lon) {
+    const center = map.getCenter();
+    if (!center) return null;
+    const zoom = map.getZoom();
+    const div = map.getDiv();
+    const p = mercatorWorld(lat, lon, zoom);
+    const c = mercatorWorld(center.lat(), center.lng(), zoom);
+    return {
+      x: div.clientWidth / 2 + (p.x - c.x),
+      y: div.clientHeight / 2 + (p.y - c.y)
+    };
+  },
+  fromPixel: function (x, y) {
+    const center = map.getCenter();
+    if (!center) return null;
+    const zoom = map.getZoom();
+    const div = map.getDiv();
+    const c = mercatorWorld(center.lat(), center.lng(), zoom);
+    return mercatorLatLon(
+      c.x + (x - div.clientWidth / 2),
+      c.y + (y - div.clientHeight / 2),
+      zoom
+    );
+  },
+  createMarker: function (lat, lon, photo, onClick, zIndexOffset) {
+    const marker = new google.maps.Marker({
+      zIndex: zIndexOffset || 0,
+      position: {lat: lat, lng: lon},
+      map: map,
+      title: photo.name,
+      icon: {
+        url: photo.marker,
+        scaledSize: new google.maps.Size(64, 64),
+        anchor: new google.maps.Point(32, 32)
+      }
+    });
+    marker.addListener('click', onClick);
+    return marker;
+  },
+  setMarkerPosition: function (marker, lat, lon) { marker.setPosition({lat: lat, lng: lon}); },
+  setMarkerVisible: function (marker, visible) { marker.setVisible(visible); },
+  removeMarker: function (marker) { marker.setMap(null); },
+  /* 缩放过程中投影还没更新，'idle' 之后才重算聚合 */
+  onZoomChange: function (cb) {
+    const listener = google.maps.event.addListener(map, 'idle', cb);
+    return function () { google.maps.event.removeListener(listener); };
+  },
+  onMove: function (cb) {
+    const listener = google.maps.event.addListener(map, 'bounds_changed', cb);
+    return function () { google.maps.event.removeListener(listener); };
+  }
+};
+
+/* 3D 视角：Google 支持倾斜（tilt 上限 67.5°），fitBounds 会把它清零，
+   所以每次 fit 完都要重新应用。 */
+let tiltOn = false;
+function applyTilt() {
+  if (!tiltOn) return;
+  map.setTilt(45);
+  map.setHeading(0);
+}
+
+const tiltButton = document.createElement('button');
+tiltButton.type = 'button';
+tiltButton.className = 'pm-tool';
+tiltButton.textContent = '3D';
+tiltButton.title = '倾斜视角';
+tiltButton.addEventListener('click', function () {
+  tiltOn = !tiltOn;
+  tiltButton.classList.toggle('pm-tool-on', tiltOn);
+  if (tiltOn) {
+    if (map.getZoom() < 15) map.setZoom(15);
+    applyTilt();
+  } else {
+    map.setTilt(0);
+  }
+});
+map.getDiv().appendChild(tiltButton);
+
+let currentCluster = null;
+
+const strip = new PhotoMap.Filmstrip(PHOTOS, {
+  onPick: function (k, photoIndex, indices) {
+    /* 用胶卷当前解析出的下标：打开时记的簇下标可能在照片列表替换后已经漂了 */
+    const group = (indices && indices.length) ? indices : [photoIndex];
+    const subset = group.map(function (idx) { return PHOTOS[idx]; }).filter(Boolean);
+    const at = group.indexOf(photoIndex);
+    lightbox.setPhotos(subset, at >= 0 ? at : 0);
+  },
+  onClose: function () { currentCluster = null; }
+});
+
+const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
+  gap: 80,
+  onSelect: function (photoIndex, group) {
+    if (list) PhotoMap.highlight(list, photoIndex);
+    if (group.length < 2) {
+      lightbox.open(photoIndex);
+      return;
+    }
+    currentCluster = group;
+    strip.open(group);
+  }
+});
+
+/* 待确认定位的照片：按候选位置显示一个带「?」角标的标记 */
+const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
+  onSelect: function (photoIndex, photo) {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, '*');
+    }
+  }
+});
+
+function fitAll() {
+  if (!PHOTOS.length) return;
+  if (PhotoMap.coordCount(PHOTOS) === 1) {
+    map.setCenter({lat: PHOTOS[0].lat, lng: PHOTOS[0].lon});
+    map.setZoom(15);
+  } else {
+    const box = new google.maps.LatLngBounds();
+    PHOTOS.forEach(function (p) { box.extend({lat: p.lat, lng: p.lon}); });
+    map.fitBounds(box);
+  }
+  applyTilt();
+}
+
+let fitted = false;
+
+function applyPhotos(rows, pendingRows) {
+  PHOTOS = rows;
+  lightbox.setAllPhotos(PHOTOS);
+  strip.setPhotos(PHOTOS);
+  if (list) {
+    const scroll = list.scrollTop;
+    PhotoMap.renderList(list, PHOTOS, function (i) {
+      lightbox.open(i);
+      map.panTo({lat: PHOTOS[i].lat, lng: PHOTOS[i].lon});
+    });
+    list.scrollTop = scroll;
+  }
+  clusterView.setPhotos(PHOTOS);
+  pendingView.setPhotos(pendingRows || []);
+  if (!fitted && PHOTOS.length) {
+    fitted = true;
+    fitAll();
+  }
+}
+
+{% if not options.live %}
+if (list) {
+  PhotoMap.renderList(list, PHOTOS, function (i) {
+    lightbox.open(i);
+    map.panTo({lat: PHOTOS[i].lat, lng: PHOTOS[i].lon});
+  });
+}
+fitAll();
+{% else %}
+let version = {{ version|tojson }};
+
+async function poll() {
+  try {
+    const res = await fetch('/api/photos?system=' + COORD_SYSTEM, { cache: 'no-store' });
+    const data = await res.json();
+    if (data.version !== version) {
+      version = data.version;
+      applyPhotos(data.photos || [], data.pending || []);
+    }
+  } catch (err) {
+    /* 服务暂时不可用，等下一轮 */
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+applyPhotos(PHOTOS, PENDING);
+poll();
+
+/* 壳页面点了侧边栏里的照片 → 由这边打开灯箱 */
+window.addEventListener('message', function (event) {
+  const data = event.data;
+  if (!data || data.type !== 'photonmap:open-photo') return;
+  const index = PHOTOS.findIndex(function (p) { return p.key === data.key; });
+  if (index >= 0) lightbox.open(index);
+});
+{% endif %}
+</script>
+</body>
+</html>

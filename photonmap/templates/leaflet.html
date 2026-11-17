@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>照片地图 · Leaflet</title>
+<link rel="stylesheet" href="{{ asset_prefix }}/vendor/leaflet.css" />
+<link rel="stylesheet" href="{{ asset_prefix }}/photo_map.css" />
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  #map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+  {% if not options.live %}
+  #map { left: 300px; }
+  #side { position: absolute; left: 0; top: 0; bottom: 0; width: 300px; overflow-y: auto;
+          background: #101418; color: #e8eaed; border-right: 1px solid #262b31; }
+  #side h1 { font-size: 15px; padding: 14px 16px; margin: 0; font-weight: 600; }
+  #side p.count { font-size: 12px; color: #9aa0a6; padding: 0 16px 12px; margin: 0; }
+  {% endif %}
+  .leaflet-container { background: #1a1f24; }
+  .pm-marker { background: none; border: none; }
+</style>
+</head>
+<body>
+{% if not options.live %}
+<div id="side">
+  <h1>照片地图</h1>
+  <p class="count">共 {{ photos|length }} 张照片</p>
+  <div id="list"></div>
+</div>
+{% endif %}
+<div id="map"></div>
+<div class="pm-drag-bar" id="pm-drag-bar" hidden>
+  <span class="pm-drag-text">移动到此处？</span>
+  <button type="button" class="pm-drag-save">保存</button>
+  <button type="button" class="pm-drag-cancel">取消</button>
+</div>
+
+<script src="{{ asset_prefix }}/vendor/leaflet.js"></script>
+<script src="{{ asset_prefix }}/photo_map.js"></script>
+<script>
+const LIVE = {{ options.live|tojson }};
+let PHOTOS = {{ photos|tojson }};
+let PENDING = {{ (pending or [])|tojson }};
+const COORD_LABEL = {{ coord_label|tojson }};
+const TILES = {{ tiles|tojson }};
+const COORD_SYSTEM = {{ coord_system|tojson }};
+const POLL_MS = {{ poll_ms|tojson }};
+
+const map = L.map('map').setView([0, 0], 2);
+
+/* 底图就是一条条瓦片 URL 模板，可以配多套并在右上角切换。
+   一片底图还可以带一层透明叠加瓦片——高德的「混合」就是卫星影像叠路网标注。
+   每片底图各自声明坐标基准：Google 的路网是 GCJ-02、卫星和混合是 WGS-84，
+   同一套偏移画三层的话，卫星底图上的照片会偏出几百米。
+   所以切换底图时要按新基准重新取一次照片坐标。 */
+function makeTileLayer(spec) {
+  return L.tileLayer(spec.url, {
+    maxZoom: spec.maxZoom || 18,
+    attribution: spec.attribution || '',
+    subdomains: spec.subdomains || 'abc'
+  });
+}
+
+const baseLayers = {};
+const layerSystems = {};
+TILES.forEach(function (t) {
+  const parts = [makeTileLayer(t)];
+  if (t.overlay) parts.push(makeTileLayer(t.overlay));
+  baseLayers[t.name] = parts.length > 1 ? L.layerGroup(parts) : parts[0];
+  layerSystems[t.name] = t.coord_system || COORD_SYSTEM;
+});
+const baseNames = Object.keys(baseLayers);
+if (baseNames.length) {
+  baseLayers[baseNames[0]].addTo(map);
+}
+/* 「照片标记」作为图层控件里的一项：取消勾选就只剩底图 */
+const photoMarkersLayer = L.layerGroup();
+photoMarkersLayer.addTo(map);
+L.control.layers(
+  baseLayers,
+  { '照片标记': photoMarkersLayer },
+  { position: 'topright' }
+).addTo(map);
+map.on('overlayadd', function (event) {
+  if (event.name === '照片标记') document.body.classList.remove('pm-hide-markers');
+});
+map.on('overlayremove', function (event) {
+  if (event.name === '照片标记') document.body.classList.add('pm-hide-markers');
+});
+
+/* 当前照片坐标所用的基准。切换底图时基准可能变（Google 三层就不一样），
+   变了就要重新拉一次照片，不然标记还停在旧基准的位置上。 */
+let currentSystem = COORD_SYSTEM;
+const SYSTEM_LABELS = { wgs84: 'WGS-84', gcj02: 'GCJ-02', bd09: 'BD-09' };
+
+const list = document.getElementById('list');
+const lightbox = new PhotoMap.Lightbox(PHOTOS, { coordLabel: COORD_LABEL, mapLabel: COORD_LABEL });
+
+/* 地图适配器：把三套地图各自的坐标/像素 API 抹平成同一套接口 */
+const adapter = {
+  container: document.getElementById('map'),
+  getZoom: function () { return map.getZoom(); },
+  toPixel: function (lat, lon) {
+    const pt = map.latLngToContainerPoint([lat, lon]);
+    return { x: pt.x, y: pt.y };
+  },
+  fromPixel: function (x, y) {
+    const ll = map.containerPointToLatLng([x, y]);
+    return { lat: ll.lat, lon: ll.lng };
+  },
+  createMarker: function (lat, lon, photo, onClick, zIndexOffset) {
+    const icon = L.divIcon({
+      className: 'pm-marker',
+      html: '<img class="pm-marker-img" loading="lazy" decoding="async" src="' + PhotoMap.esc(photo.marker) + '" alt="" />',
+      iconSize: [64, 64],
+      iconAnchor: [32, 32]
+    });
+    const marker = L.marker([lat, lon], {
+      icon: icon, riseOnHover: true, zIndexOffset: zIndexOffset || 0
+    });
+    marker.on('click', onClick);
+    marker.addTo(map);
+    return marker;
+  },
+  setMarkerPosition: function (marker, lat, lon) { marker.setLatLng([lat, lon]); },
+  /* 单张照片的标记可以拖：拖完回调新位置，由页面弹确认条 */
+  setMarkerDraggable: function (marker, draggable, onDrop) {
+    if (!marker || !marker.dragging) return;
+    if (draggable) {
+      marker.dragging.enable();
+      marker.__pmDrop = function () {
+        const ll = marker.getLatLng();
+        onDrop({ lat: ll.lat, lon: ll.lng });
+      };
+      marker.off('dragend', marker.__pmDrop);
+      marker.on('dragend', marker.__pmDrop);
+    } else {
+      marker.dragging.disable();
+      if (marker.__pmDrop) { marker.off('dragend', marker.__pmDrop); marker.__pmDrop = null; }
+    }
+  },
+  setMarkerVisible: function (marker, visible) {
+    const el = marker.getElement();
+    if (el) el.style.display = visible ? '' : 'none';
+  },
+  removeMarker: function (marker) { map.removeLayer(marker); },
+  onZoomChange: function (cb) {
+    map.on('zoomend', cb);
+    return function () { map.off('zoomend', cb); };
+  },
+  onMove: function (cb) {
+    map.on('move', cb);
+    return function () { map.off('move', cb); };
+  }
+};
+
+let currentCluster = null;
+
+const strip = new PhotoMap.Filmstrip(PHOTOS, {
+  onPick: function (k, photoIndex, indices) {
+    /* 用胶卷当前解析出的下标：打开时记的簇下标可能在照片列表替换后已经漂了 */
+    const group = (indices && indices.length) ? indices : [photoIndex];
+    const subset = group.map(function (idx) { return PHOTOS[idx]; }).filter(Boolean);
+    const at = group.indexOf(photoIndex);
+    lightbox.setPhotos(subset, at >= 0 ? at : 0);
+  },
+  onClose: function () { currentCluster = null; },
+  /* 胶卷多选后交给壳页面开「移动到…」浮层，只有 live 模式能写盘 */
+  canMove: LIVE,
+  onMoveSelected: LIVE ? function (indices) {
+    const keys = indices.map(function (i) { return PHOTOS[i] && PHOTOS[i].key; })
+                        .filter(Boolean);
+    if (!keys.length) return;
+    window.parent.postMessage({ type: 'photonmap:move-photos', keys: keys }, '*');
+  } : null
+});
+
+const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
+  gap: 80,
+  onSelect: function (photoIndex, group) {
+    if (list) PhotoMap.highlight(list, photoIndex);
+    if (group.length < 2) {
+      lightbox.open(photoIndex);
+      return;
+    }
+    currentCluster = group;
+    strip.open(group);
+  },
+  /* 单张照片的标记可以拖动改位置；松手先弹确认条，不直接写盘 */
+  onDrag: LIVE ? onPhotoDragged : null
+});
+
+/* 待确认定位的照片：按候选位置显示一个带「?」角标的标记 */
+const pendingView = new PhotoMap.PendingView(PENDING, adapter, {
+  onSelect: function (photoIndex, photo) {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'photonmap:pending-click', key: photo.key }, '*');
+    }
+  }
+});
+
+function fitAll() {
+  if (!PHOTOS.length) return;
+  if (PhotoMap.coordCount(PHOTOS) === 1) {
+    map.setView(L.latLng(PHOTOS[0].lat, PHOTOS[0].lon), 15);
+  } else {
+    map.fitBounds(L.latLngBounds(PHOTOS.map(p => [p.lat, p.lon])).pad(0.25));
+  }
+}
+
+let fitted = false;
+
+function applyPhotos(rows, pendingRows) {
+  PHOTOS = rows;
+  PENDING = pendingRows || [];
+  lightbox.setAllPhotos(PHOTOS);
+  strip.setPhotos(PHOTOS);
+  if (list) {
+    const scroll = list.scrollTop;
+    PhotoMap.renderList(list, PHOTOS, function (i) {
+      lightbox.open(i);
+      map.panTo([PHOTOS[i].lat, PHOTOS[i].lon]);
+    });
+    list.scrollTop = scroll;
+  }
+  clusterView.setPhotos(PHOTOS);
+  pendingView.setPhotos(pendingRows || []);
+  if (!fitted && PHOTOS.length) {
+    fitted = true;
+    fitAll();
+  }
+}
+
+{% if not options.live %}
+if (list) {
+  PhotoMap.renderList(list, PHOTOS, function (i) {
+    lightbox.open(i);
+    map.panTo([PHOTOS[i].lat, PHOTOS[i].lon]);
+  });
+}
+fitAll();
+{% else %}
+let version = {{ version|tojson }};
+
+async function loadPhotos(system, force) {
+  const res = await fetch('/api/photos?system=' + system, { cache: 'no-store' });
+  const data = await res.json();
+  /* 请求期间底图又换了的话，这次结果是旧基准的，直接丢掉 */
+  if ((data.system || system) !== currentSystem) return;
+  if (force || data.version !== version) {
+    version = data.version;
+    applyPhotos(data.photos || [], data.pending || []);
+  }
+}
+
+async function poll() {
+  try {
+    await loadPhotos(currentSystem, false);
+  } catch (err) {
+    /* 服务暂时不可用，等下一轮 */
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+/* 底图换了、坐标基准也跟着换了：重新取坐标并重建标记 */
+map.on('baselayerchange', function (event) {
+  const system = layerSystems[event.name] || COORD_SYSTEM;
+  if (system === currentSystem) return;
+  currentSystem = system;
+  lightbox.mapLabel = SYSTEM_LABELS[system] || system;
+  loadPhotos(system, true);
+});
+
+applyPhotos(PHOTOS, PENDING);
+poll();
+{% endif %}
+
+/* ---------------------------------------------------------------- 拖动标记改位置 */
+let dragPending = null;
+const dragBar = document.getElementById('pm-drag-bar');
+const dragText = dragBar.querySelector('.pm-drag-text');
+const dragSave = dragBar.querySelector('.pm-drag-save');
+const dragCancel = dragBar.querySelector('.pm-drag-cancel');
+
+function onPhotoDragged(photoIndex, point) {
+  if (!LIVE) return;
+  const photo = PHOTOS[photoIndex];
+  if (!photo || !photo.key) return;
+  dragPending = {
+    index: photoIndex,
+    key: photo.key,
+    lat: point.lat,
+    lon: point.lon,
+    from: [photo.lat, photo.lon]
+  };
+  dragText.textContent = '移动到 ' + point.lat.toFixed(6) + ', ' + point.lon.toFixed(6) + '？';
+  dragSave.disabled = false;
+  dragCancel.disabled = false;
+  dragBar.hidden = false;
+}
+
+/* 取消：把标记放回原来的位置 */
+function cancelDrag() {
+  if (dragPending) {
+    const handle = clusterView.markers[dragPending.index];
+    if (handle && adapter.setMarkerPosition) {
+      adapter.setMarkerPosition(handle, dragPending.from[0], dragPending.from[1]);
+    }
+  }
+  dragPending = null;
+  dragBar.hidden = true;
+}
+
+dragSave.addEventListener('click', function () {
+  if (!dragPending) return;
+  const pending = dragPending;
+  dragSave.disabled = true;
+  dragCancel.disabled = true;
+  dragText.textContent = '保存中…';
+  window.parent.postMessage({
+    type: 'photonmap:drag-move',
+    key: pending.key,
+    lat: pending.lat,
+    lon: pending.lon,
+    system: currentSystem
+  }, '*');
+});
+
+dragCancel.addEventListener('click', cancelDrag);
+
+/* 壳页面来的消息 */
+window.addEventListener('message', function (event) {
+  const data = event.data;
+  if (!data) return;
+  /* 拖动保存的结果：成功就收起确认条，失败恢复原位置 */
+  if (data.type === 'photonmap:move-result') {
+    if (!dragPending) return;
+    if (data.ok) {
+      dragPending = null;
+      dragBar.hidden = true;
+    } else {
+      alert('保存失败：' + (data.error || '未知错误'));
+      cancelDrag();
+    }
+    return;
+  }
+  /* 地址搜索的结果：给的是 WGS-84，落到当前底图的基准上再定位 */
+  if (data.type === 'photonmap:goto') {
+    const point = PhotoMap.coord.convert(data.lat, data.lon, currentSystem);
+    map.setView([point.lat, point.lon], data.zoom || 16);
+    return;
+  }
+  /* 壳页面问「地图现在看的是哪儿」→ 回 WGS-84 中心点 */
+  if (data.type === 'photonmap:get-view') {
+    const center = map.getCenter();
+    const wgs = PhotoMap.coord.convert(center.lat, center.lng, 'wgs84', currentSystem);
+    window.parent.postMessage({ type: 'photonmap:view', lat: wgs.lat, lon: wgs.lon }, '*');
+    return;
+  }
+  /* 壳页面点了侧边栏里的照片 → 由这边打开灯箱 */
+  if (data.type === 'photonmap:open-photo') {
+    const index = PHOTOS.findIndex(function (p) { return p.key === data.key; });
+    if (index >= 0) lightbox.open(index);
+  }
+});
+</script>
+</body>
+</html>
