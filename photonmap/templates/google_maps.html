@@ -192,6 +192,9 @@ const strip = new PhotoMap.Filmstrip(PHOTOS, {
   onClose: function () { currentCluster = null; }
 });
 
+/* 点地图空白处自动收起胶卷 */
+google.maps.event.addListener(map, 'click', function () { strip.close(); });
+
 const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
   gap: 80,
   onSelect: function (photoIndex, group) {

@@ -197,6 +197,12 @@ const strip = new PhotoMap.Filmstrip(PHOTOS, {
   } : null
 });
 
+/* 点地图空白处自动收起胶卷；点标记（overlay）不算 */
+map.addEventListener('click', function (event) {
+  if (event && event.overlay) return;
+  strip.close();
+});
+
 const clusterView = new PhotoMap.ClusterView(PHOTOS, adapter, {
   gap: 80,
   onSelect: function (photoIndex, group) {

@@ -21,6 +21,7 @@
 - **胶卷按业务 key 记照片，不记数组下标**：`Filmstrip` 打开时把 `photo.key`（静态导出退到 marker+坐标）存进 `keys`，每次渲染/点击都用 `findIndex` 重新解析成当前 `PHOTOS` 里的下标。照片列表在 serve 模式随时会被整体替换（确认位置、轮询发现变化），存旧下标会让点击串位甚至打开空照片——表现就是「点了没反应」。`onPick(k, photoIndex, indices)` 的第三个参数是当前解析出的下标表，模板用它组灯箱子集，不要再依赖打开时记住的簇下标。
 - **图片一律 `loading="lazy" decoding="async"`**（地图标记、侧栏缩略图、胶卷缩略图）：4000 张照片的目录一次会建几千个 `<img>`，不加懒加载就是几千个并发请求，服务端和浏览器都会被打爆（连接被拒、部分图片加载失败）。现在只有视口附近的那几十张真正下载。
 - **地图「隐藏照片」**：Leaflet 系引擎（叶子/Google/高德）把「照片标记」作为**右上角图层控件里的一项**（`L.control.layers` 的 overlay，默认勾选；取消勾选切 `body.pm-hide-markers`，CSS 隐藏 `.leaflet-marker-pane` / `.pm-cluster-layer`）。百度没有图层控件，用左上角一个紧凑的 `.pm-tool` 按钮（文字「照片」）切换。
+- **点地图收起胶卷**：地图 click 事件里调 `strip.close()`（Leaflet/Google 直接连；百度忽略 `event.overlay`，点标记不算）。点代表标记打开胶卷不会被立刻关掉——Leaflet marker 默认不冒泡到 map click。
 - **胶卷支持滚轮横向滚动**：`.pm-strip-track` 的 `wheel` 监听把纵向 delta 加到 `scrollLeft`（`passive:false` + `preventDefault`），照片超出屏幕时不用拖滚动条；内容没超出时不拦截。
 - **放大后把同点位的少数几张散开（spiderfy）**：`ClusterView.update()` 里，簇内 2–16 张且 `adapter.getZoom() >= 15` 时，按圆周把成员摆开（半径 `max(72, n*76/2π)`），每张单独可点、可拖；此时点标记直接开灯箱而不是弹胶卷（`select()` 里 `cluster.spidered` 分支）。照片更多或缩放不够时仍按整体显示 + 数量角标。
 - **照片列表可动态替换**（`serve` 模式需要）：`ClusterView.setPhotos(photos)` 内容没变只重算聚类，变了就 `destroy()` 后整体重建标记；`Lightbox.setAllPhotos(photos)` 更新完整图集（正在看某一簇子集时不动它）；`Filmstrip.setPhotos(photos)` 更新胶卷引用的照片表。比较是否变化用 `photoKey()`（标记图路径 + 坐标），不能用对象引用——服务端每次都返回新对象。
