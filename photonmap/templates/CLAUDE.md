@@ -11,6 +11,7 @@
 - 点代表标记：簇内 1 张 → 直接打开灯箱；>1 张 → 底部弹出横向胶卷（`PhotoMap.Filmstrip`），列出该簇全部缩略图，点其中一张 → 灯箱切到该子集（`lightbox.setPhotos()`），页码变成簇内计数、←/→ 只在簇内循环。
 - **胶卷多选移动**（只有 serve 模式给 `canMove: true`）：胶卷工具栏有「改变位置」按钮，点后进入选择态（缩略图打勾、可全选），点「移动到所选」通过 `photonmap:move-photos` 把照片 key 交给壳页面，复用定位浮层选点，确认后走 `/api/locate/batch`（`mode: "same"` + 每张各自的令牌）。静态导出没有写盘能力，不显示这个按钮。
 - **单张照片标记可拖动**：`ClusterView` 只对「独占一个标记」的照片调用 `adapter.setMarkerDraggable(marker, true, onDrop)`（聚类代表标记拖走哪张说不清，保持不可拖）。拖完先弹 `.pm-drag-bar` 确认条，点「保存」才发 `photonmap:drag-move` 给壳页面；取消或写入失败时按记录的原始经纬度把标记放回去。
+- **灯箱点图即关**：点图片本身、图片外空白或背景都关闭灯箱（不用去找 ×）；放大后拖动平移结束那一下不会被当成点击关闭（`movedPx > 3` 判定）。图片默认 `cursor: pointer`，放大后变 `grab`。
 - Esc 只关闭最上层 UI：先关灯箱、再关胶卷（胶卷处于多选态时，Esc 先退出选择态）。归属在 `document` 的 **capture 阶段**判定（`event.__pmEscOwner` = `lightbox` / `strip`），灯箱与胶卷各自的 keydown 监听器据此决定是否响应——否则灯箱先关掉 DOM class 后，胶卷会误以为可以关闭，同一次 Esc 把两层一起关掉。
 - 三个模板各自实现一份 `adapter`，把三套地图的 API 抹平。契约共 10 项：`container` / `toPixel` / `fromPixel` / `createMarker` / `setMarkerPosition` / `setMarkerVisible` / `removeMarker` / `onZoomChange` / `onMove`：
   - Leaflet：`map.latLngToContainerPoint()` / `map.containerPointToLatLng()`，事件 `zoomend` / `move`

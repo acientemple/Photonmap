@@ -748,8 +748,15 @@
     this.el.querySelector('.pm-close').addEventListener('click', function () { self.close(); });
     this.el.querySelector('.pm-prev').addEventListener('click', function () { self.step(-1); });
     this.el.querySelector('.pm-next').addEventListener('click', function () { self.step(1); });
+    /* 点图片本身、点图片外的空白、点背景都算关闭；但拖拽平移之后那一下不算 */
     this.el.addEventListener('click', function (event) {
-      if (event.target === self.el || event.target.classList.contains('pm-stage')) {
+      if (self.movedPx > 3) { self.movedPx = 0; return; }
+      var target = event.target;
+      if (
+        target === self.el ||
+        target === self.img ||
+        (target.classList && target.classList.contains('pm-stage'))
+      ) {
         self.close();
       }
     });
@@ -774,12 +781,14 @@
     this.stage.addEventListener('mousedown', function (event) {
       if (self.scale <= 1) return;
       dragging = true;
+      self.movedPx = 0;
       lastX = event.clientX;
       lastY = event.clientY;
       self.stage.classList.add('pm-dragging');
     });
     window.addEventListener('mousemove', function (event) {
       if (!dragging) return;
+      self.movedPx += Math.abs(event.clientX - lastX) + Math.abs(event.clientY - lastY);
       self.panX += event.clientX - lastX;
       self.panY += event.clientY - lastY;
       lastX = event.clientX;
@@ -814,6 +823,7 @@
     this.scale = 1;
     this.panX = 0;
     this.panY = 0;
+    this.movedPx = 0;
     this.apply();
 
     this.info.innerHTML = this.infoHtml(p);

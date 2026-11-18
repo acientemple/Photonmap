@@ -99,6 +99,7 @@
   max-height: 92%;
   object-fit: contain;
   user-select: none;
+  cursor: pointer;
   -webkit-user-drag: none;
   transition: transform .08s ease-out;
 }
