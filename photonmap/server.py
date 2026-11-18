@@ -362,6 +362,13 @@ class PhotoLibrary:
         if not roots:
             raise FileNotFoundError("至少要有一个照片目录")
         self.roots = roots
+        # 多个根目录同名时（比如两个 photos 文件夹）只靠 basename 会撞车：
+        # 侧栏按文件夹合并时会把不相干照片并到一起，批处理就改错文件了
+        names = [item.name for item in roots]
+        self._root_labels = {
+            item: (f"{item.name}#{index + 1}" if names.count(item.name) > 1 else item.name)
+            for index, item in enumerate(roots)
+        }
         # self.root 保留给只关心单个目录的老代码（导出器、CLI）
         self.root = roots[0]
         self.assets_dir = Path(assets_dir)
@@ -814,7 +821,8 @@ class PhotoLibrary:
             text = "" if str(relative) == "." else str(relative)
             if len(self.roots) == 1:
                 return text
-            return f"{root.name}/{text}" if text else root.name
+            label = self._root_labels.get(root, root.name)
+            return f"{label}/{text}" if text else label
         return record.path.parent.name
 
     def _thumb_url(self, record: PhotoRecord) -> str:
@@ -1475,18 +1483,32 @@ class LiveHandler(BaseHTTPRequestHandler):
                 return {"ok": True, "path": "", "parent": None, "dirs": drives}
             raw = str(Path.home())
         target = Path(raw)
+        if os.name == "nt":
+            text = str(target).replace("/", "\\")
+            # UNC（\server\share）和设备路径（\.\ / \?\）会触发网络/底层访问，
+            # 目录浏览用不到，直接拒掉，免得被拿来探测内网共享
+            if text.startswith("\\\\") or text.startswith("\\.\\"):
+                return {"ok": False, "error": "不支持网络路径"}
         if not target.is_dir():
             return {"ok": False, "error": "目录不存在"}
         dirs = []
         try:
             with os.scandir(target) as entries:
-                for entry in sorted(entries, key=lambda item: item.name.lower()):
-                    if entry.is_dir(follow_symlinks=False):
-                        dirs.append({"name": entry.name, "path": entry.path})
+                # 边扫边收，够 500 个就停：不要先把整目录（可能几十万项）排序再截断
+                for entry in entries:
+                    try:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    dirs.append({"name": entry.name, "path": entry.path})
+                    if len(dirs) >= 500:
+                        break
         except OSError as exc:
             return {"ok": False, "error": f"无法读取：{exc}"}
+        dirs.sort(key=lambda item: item["name"].lower())
         parent = str(target.parent) if target.parent != target else None
-        return {"ok": True, "path": str(target), "parent": parent, "dirs": dirs[:500]}
+        return {"ok": True, "path": str(target), "parent": parent, "dirs": dirs}
 
     def _handle_browse(self) -> None:
         """列目录。要带 session：目录列表不该被任意页面拿到。"""

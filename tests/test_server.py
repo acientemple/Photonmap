@@ -1671,3 +1671,53 @@ def test_browse_requires_session_and_is_post_only(photo_dir, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_browse_rejects_unc_paths(photo_dir, tmp_path):
+    """目录浏览不接受 UNC / 设备路径（避免被拿来探测内网共享）。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with _post_json(base, "/api/browse", {
+            "session": server.session, "path": r"\server\share",
+        }) as res:
+            data = json.loads(res.read().decode("utf-8"))
+        assert data["ok"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_browse_caps_listing(photo_dir, tmp_path):
+    """目录里条目再多也只返回 500 个，不会把整个目录排序一遍。"""
+    for index in range(520):
+        (photo_dir / f"d{index:04d}").mkdir()
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with _post_json(base, "/api/browse", {
+            "session": server.session, "path": str(photo_dir),
+        }) as res:
+            data = json.loads(res.read().decode("utf-8"))
+        assert data["ok"] is True
+        assert len(data["dirs"]) == 500
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_same_named_roots_get_distinct_labels(tmp_path):
+    """两个同名根目录（a/photos、b/photos）的文件夹标签不能撞车。"""
+    first = tmp_path / "a" / "photos"
+    second = tmp_path / "b" / "photos"
+    write_gps_photo(first / "one.jpg", 31.0, 121.0, datetime(2024, 5, 1, 10, 0, 0))
+    write_gps_photo(second / "two.jpg", 30.0, 120.0, datetime(2024, 5, 2, 10, 0, 0))
+    library = PhotoLibrary([first, second], tmp_path / "files")
+    library.refresh()
+    labels = {group["folder"] for group in library.groups()}
+    assert len(labels) == 2
+    assert any("#1" in label or "#2" in label for label in labels)
