@@ -1529,7 +1529,9 @@ def test_bye_endpoint_flags_shutdown_and_new_request_clears_it(photo_dir, tmp_pa
     thread.start()
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        request = urllib.request.Request(base + "/api/bye", data=b"", method="POST")
+        request = urllib.request.Request(
+            base + "/api/bye?session=" + server.session, data=b"", method="POST"
+        )
         with urllib.request.urlopen(request) as res:
             assert res.status == 204
         assert server.bye_at is not None
@@ -1537,6 +1539,32 @@ def test_bye_endpoint_flags_shutdown_and_new_request_clears_it(photo_dir, tmp_pa
         with urllib.request.urlopen(base + "/api/photos") as res:
             assert res.status == 200
         assert server.bye_at is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_bye_requires_session(photo_dir, tmp_path):
+    """关停信号要带 session，否则别的站点能把本地服务关掉。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(
+                urllib.request.Request(base + "/api/bye", data=b"", method="POST")
+            )
+        assert excinfo.value.code == 403
+        assert server.bye_at is None
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                base + "/api/bye?session=" + server.session, data=b"", method="POST"
+            )
+        ) as res:
+            assert res.status == 204
+        assert server.bye_at is not None
     finally:
         server.shutdown()
         server.server_close()

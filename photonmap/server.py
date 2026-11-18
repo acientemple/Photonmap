@@ -1418,7 +1418,14 @@ class LiveHandler(BaseHTTPRequestHandler):
 
         先等几秒看看有没有新请求（刷新页面会重新连上），
         没等到就由启动器把服务停掉。
+
+        要带页面里的 session 当 CSRF 令牌：否则别的站点随手 POST 一下
+        就能把本地服务关掉（一种廉价的拒绝服务）。
         """
+        session = parse_qs(urlparse(self.path).query).get("session", [""])[0]
+        if session != self.server.session:
+            self.send_error(403, "Forbidden")
+            return
         self.server.bye_at = time.monotonic()
         self.send_response(204)
         self.end_headers()
