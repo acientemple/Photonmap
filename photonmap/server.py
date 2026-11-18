@@ -227,12 +227,19 @@ def asset_key(path: Path) -> str:
     return key
 
 
-def default_workdir(root: Path) -> Path:
-    """派生资源（缩略图、标记图）的默认存放目录，按源目录区分。"""
-    try:
-        resolved = str(root.resolve())
-    except OSError:
-        resolved = str(root)
+def default_workdir(root) -> Path:
+    """派生资源（缩略图、标记图）的默认存放目录，按源目录区分。
+
+    root 可以是单个目录，也可以是目录列表（多个照片文件夹共用一个工作目录）。
+    """
+    roots = root if isinstance(root, (list, tuple)) else [root]
+    resolved_parts = []
+    for item in roots:
+        try:
+            resolved_parts.append(str(Path(item).resolve()))
+        except OSError:
+            resolved_parts.append(str(item))
+    resolved = "\n".join(sorted(resolved_parts))
     tag = hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:10]
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
@@ -342,7 +349,7 @@ class PhotoLibrary:
 
     def __init__(
         self,
-        root: Path,
+        root: Path | list[Path],
         assets_dir: Path,
         coord_system: str = "wgs84",
         recursive: bool = True,
@@ -351,7 +358,12 @@ class PhotoLibrary:
         write_exif: bool = False,
         backup_dir: Path | None = None,
     ):
-        self.root = Path(root)
+        roots = [Path(item) for item in (root if isinstance(root, (list, tuple)) else [root])]
+        if not roots:
+            raise FileNotFoundError("至少要有一个照片目录")
+        self.roots = roots
+        # self.root 保留给只关心单个目录的老代码（导出器、CLI）
+        self.root = roots[0]
         self.assets_dir = Path(assets_dir)
         self.coord_system = coord_system
         self.recursive = recursive
@@ -394,7 +406,12 @@ class PhotoLibrary:
             return
         if not isinstance(data, dict) or data.get("version") != _INDEX_VERSION:
             return
-        if data.get("root") != str(self.root):
+        stored = data.get("roots")
+        if isinstance(stored, list):
+            if [str(item) for item in self.roots] != stored:
+                return
+        elif len(self.roots) != 1 or data.get("root") != str(self.root):
+            # 老格式只记了一个 root
             return
         raw_entries = data.get("entries")
         if not isinstance(raw_entries, dict):
@@ -417,6 +434,7 @@ class PhotoLibrary:
         payload = {
             "version": _INDEX_VERSION,
             "root": str(self.root),
+            "roots": [str(item) for item in self.roots],
             "entries": {key: _entry_to_json(entry) for key, entry in self._entries.items()},
         }
         try:
@@ -430,7 +448,21 @@ class PhotoLibrary:
         progress(done, total) 每处理完一张照片回调一次，供启动器显示进度。
         """
         self._load_index()
-        files = scan_directory(self.root, recursive=self.recursive)
+        files: list[Path] = []
+        seen: set[str] = set()
+        for base in self.roots:
+            try:
+                found = scan_directory(base, recursive=self.recursive)
+            except FileNotFoundError:
+                log.warning("照片目录不存在，跳过：%s", base)
+                continue
+            for path in found:
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                files.append(path)
+        files.sort()
         stamps: dict[str, tuple] = {}
         for path in files:
             stamp = _file_stamp(path)
@@ -770,13 +802,20 @@ class PhotoLibrary:
         return list(result)
 
     def _folder_label(self, record: PhotoRecord) -> str:
-        """照片所在文件夹（相对照片根目录），根目录本身返回空串。"""
-        try:
-            relative = record.path.parent.relative_to(self.root)
-        except ValueError:
-            return record.path.parent.name
-        text = str(relative)
-        return "" if text == "." else text
+        """照片所在文件夹（相对照片根目录），根目录本身返回空串。
+
+        多个照片目录时前缀根目录名，免得两个目录下的同名子文件夹混在一起。
+        """
+        for root in self.roots:
+            try:
+                relative = record.path.parent.relative_to(root)
+            except ValueError:
+                continue
+            text = "" if str(relative) == "." else str(relative)
+            if len(self.roots) == 1:
+                return text
+            return f"{root.name}/{text}" if text else root.name
+        return record.path.parent.name
 
     def _thumb_url(self, record: PhotoRecord) -> str:
         """缩略图在页面上的 URL。"""
@@ -1025,6 +1064,10 @@ class LiveHandler(BaseHTTPRequestHandler):
                 self._send_engine_page(path[len("/map/"):])
             elif path == "/api/photos":
                 self._send_json(self._photos_payload(parsed))
+            elif path == "/api/folders":
+                self._send_json(self._folders_payload())
+            elif path == "/api/browse":
+                self._send_json(self._browse_payload(parsed))
             elif path == "/api/geocode":
                 self._send_json(self._geocode_payload(parsed))
             elif path == "/api/groups":
@@ -1063,6 +1106,8 @@ class LiveHandler(BaseHTTPRequestHandler):
                 self._handle_ai_locate()
             elif path == "/api/bye":
                 self._handle_bye()
+            elif path == "/api/folders":
+                self._handle_folders()
             else:
                 self.send_error(404, "Not Found")
         except BrokenPipeError:
@@ -1413,6 +1458,69 @@ class LiveHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _folders_payload(self) -> dict:
+        """当前正在看的照片目录列表。"""
+        return {"ok": True, "roots": [str(item) for item in self.server.library.roots]}
+
+    def _browse_payload(self, parsed) -> dict:
+        """列目录，给「添加文件夹」用。只列目录，不列文件。"""
+        raw = parse_qs(parsed.query).get("path", [""])[0].strip()
+        if not raw:
+            if os.name == "nt":
+                drives = []
+                for letter in "CDEFGHIJKLMNOPQRSTUVWXYZAB":
+                    candidate = Path(f"{letter}:\\")
+                    if candidate.exists():
+                        drives.append({"name": f"{letter}:", "path": str(candidate)})
+                return {"ok": True, "path": "", "parent": None, "dirs": drives}
+            raw = str(Path.home())
+        target = Path(raw)
+        if not target.is_dir():
+            return {"ok": False, "error": "目录不存在"}
+        dirs = []
+        try:
+            with os.scandir(target) as entries:
+                for entry in sorted(entries, key=lambda item: item.name.lower()):
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.append({"name": entry.name, "path": entry.path})
+        except OSError as exc:
+            return {"ok": False, "error": f"无法读取：{exc}"}
+        parent = str(target.parent) if target.parent != target else None
+        return {"ok": True, "path": str(target), "parent": parent, "dirs": dirs[:500]}
+
+    def _handle_folders(self) -> None:
+        """换一组照片目录（设置里的文件夹管理）。"""
+        payload = self._read_json()
+        if payload is None:
+            return
+        if payload.get("session") != self.server.session:
+            self.send_error(409, "Stale Session")
+            return
+        items = payload.get("folders")
+        if not isinstance(items, list) or not items:
+            self.send_error(400, "Bad Request")
+            return
+        roots = []
+        for item in items:
+            if not isinstance(item, str) or not item.strip():
+                self.send_error(400, "Bad Request")
+                return
+            path = Path(item.strip())
+            if not path.is_dir():
+                self.send_error(400, "Bad Request")
+                return
+            if path not in roots:
+                roots.append(path)
+        if not roots:
+            self.send_error(400, "Bad Request")
+            return
+        self.server.switch_roots(roots)
+        print(
+            f"[{time.strftime('%H:%M:%S')}] 更换照片目录：{'、'.join(str(r) for r in roots)}",
+            flush=True,
+        )
+        self._send_json({"ok": True, "roots": [str(item) for item in roots]})
+
     def _handle_bye(self) -> None:
         """页面关了（sendBeacon）：给启动器一个关停信号。
 
@@ -1643,6 +1751,31 @@ class LiveServer(ThreadingHTTPServer):
         self.tokens = TokenStore()
         self.geocoder = Geocoder()
 
+    def switch_roots(self, roots: list[Path]) -> None:
+        """换一组照片目录：重建库，端口和页面都不用变。"""
+        library = self.library
+        new_library = PhotoLibrary(
+            roots,
+            library.assets_dir,
+            coord_system=library.coord_system,
+            recursive=library.recursive,
+            default_location=library.default_location,
+            location_table=library.location_table,
+            write_exif=library.write_exif,
+            backup_dir=library.backup_dir,
+        )
+        new_library.refresh()
+        watcher = getattr(self, "watcher", None)
+        if watcher is not None:
+            watcher.stop()
+            watcher.join(timeout=5)
+        self.library = new_library
+        if watcher is not None:
+            replacement = Watcher(new_library, watcher.interval)
+            replacement.start()
+            self.watcher = replacement
+
+
 
 class Watcher(threading.Thread):
     """后台定时扫描目录，照片有变动就更新库。"""
@@ -1700,16 +1833,22 @@ def build_server(
     progress=None,
 ) -> LiveServer:
     """搭好服务（不启动监听），供测试与 serve() 使用。"""
-    root = Path(root)
-    if not root.exists():
-        raise FileNotFoundError(f"目录不存在: {root}")
+    roots = [Path(item) for item in (root if isinstance(root, (list, tuple)) else [root])]
+    if not roots:
+        raise FileNotFoundError("至少要有一个照片目录")
+    missing = [item for item in roots if not item.exists()]
+    for item in missing:
+        log.warning("照片目录不存在，跳过：%s", item)
+    roots = [item for item in roots if item.exists()]
+    if not roots:
+        raise FileNotFoundError(f"目录不存在: {missing[0] if missing else root}")
 
-    base = Path(workdir) if workdir else default_workdir(root)
+    base = Path(workdir) if workdir else default_workdir(roots)
     assets_dir = base / "files"
     install_static_files(assets_dir)
 
     library = PhotoLibrary(
-        root,
+        roots,
         assets_dir,
         coord_system=coord_system,
         recursive=recursive,
@@ -1821,6 +1960,7 @@ def serve(
 
     watcher = Watcher(server.library, poll_ms / 1000.0)
     watcher.start()
+    server.watcher = watcher
 
     host, port = server.server_address[:2]
     url = f"http://{host}:{port}/"

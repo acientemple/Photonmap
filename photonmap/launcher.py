@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import logging.handlers
 import os
@@ -111,6 +112,39 @@ def _setup_logging() -> None:
     root_logger.addHandler(handler)
 
 
+def _config_path() -> Path:
+    return _log_dir() / "launcher.json"
+
+
+def _load_saved_folders() -> list[Path]:
+    """上次打开过的照片文件夹（都还存在才用）。"""
+    try:
+        data = json.loads(_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    folders = data.get("folders") if isinstance(data, dict) else None
+    if not isinstance(folders, list):
+        return []
+    result: list[Path] = []
+    for item in folders:
+        if not isinstance(item, str):
+            continue
+        path = Path(item)
+        if path.is_dir() and path not in result:
+            result.append(path)
+    return result
+
+
+def _save_folders(folders) -> None:
+    payload = {"folders": [str(Path(item)) for item in folders]}
+    try:
+        path = _config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _log_exception() -> None:
     """把当前异常（traceback）追加到日志。"""
     _write_log(traceback.format_exc().splitlines(keepends=True))
@@ -121,20 +155,22 @@ class LauncherServer:
 
     def __init__(
         self,
-        root: Path | str,
+        root: Path | str | list,
         host: str = "127.0.0.1",
         port: int | None = None,
         workdir: Path | None = None,
         poll_seconds: float = 2.0,
         progress=None,
     ) -> None:
-        root = Path(root)
-        if not root.exists():
-            raise FileNotFoundError(f"照片目录不存在: {root}")
+        roots = [Path(item) for item in (root if isinstance(root, (list, tuple)) else [root])]
+        missing = [item for item in roots if not item.exists()]
+        roots = [item for item in roots if item.exists()]
+        if not roots:
+            raise FileNotFoundError(f"照片目录不存在: {missing[0] if missing else root}")
         self._poll_seconds = max(0.5, poll_seconds)
         self._port = find_free_port(host, 8765) if port is None else port
         self.server = build_server(
-            root,
+            roots,
             tiles=[dict(DEFAULT_TILE)],
             workdir=Path(workdir) if workdir else None,
             host=host,
@@ -156,6 +192,7 @@ class LauncherServer:
             return
         self._watcher = Watcher(self.server.library, self._poll_seconds)
         self._watcher.start()
+        self.server.watcher = self._watcher
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self._thread.start()
         self._started = True
@@ -164,9 +201,10 @@ class LauncherServer:
         if not self._started:
             return
         self._started = False
-        if self._watcher is not None:
-            self._watcher.stop()
-            self._watcher = None
+        watcher = getattr(self.server, "watcher", self._watcher)
+        if watcher is not None:
+            watcher.stop()
+        self._watcher = None
         self.server.shutdown()
         self.server.server_close()
         if self._thread is not None:
@@ -225,9 +263,9 @@ def _enable_dpi_awareness() -> None:
         pass
 
 
-def run_gui(root_path: Path, initial_open: bool = True) -> None:
+def run_gui(root_path, initial_open: bool = True) -> None:
     """先出窗口，再在后台扫描目录；关窗即停止服务。"""
-    root_path = Path(root_path)
+    roots = [Path(item) for item in (root_path if isinstance(root_path, (list, tuple)) else [root_path])]
     root = tk.Tk()
     root.title("PhotonMap 照片地图")
     root.resizable(False, False)
@@ -242,7 +280,7 @@ def run_gui(root_path: Path, initial_open: bool = True) -> None:
     stopped = {"value": False}
 
     ttk.Label(frame, text="照片目录").grid(row=0, column=0, sticky="w")
-    ttk.Label(frame, text=str(root_path), wraplength=380).grid(
+    ttk.Label(frame, text="；".join(str(item) for item in roots), wraplength=380).grid(
         row=0, column=1, sticky="w", padx=(8, 0)
     )
     ttk.Label(frame, text="状态").grid(row=1, column=0, sticky="w", pady=(8, 0))
@@ -303,8 +341,10 @@ def run_gui(root_path: Path, initial_open: bool = True) -> None:
             if initial_open:
                 root.after(300, open_page)
             # 加载完成就把窗口收起来，只在扫描/出错时出现
+            saved = {"roots": [str(item) for item in server.server.library.roots]}
+            _save_folders(server.server.library.roots)
             root.after(300, root.withdraw)
-            root.after(1000, monitor, server, time.monotonic())
+            root.after(1000, monitor, server, time.monotonic(), saved)
             return
         if progress["total"]:
             status_var.set(
@@ -313,20 +353,24 @@ def run_gui(root_path: Path, initial_open: bool = True) -> None:
             )
         root.after(200, poll)
 
-    def monitor(launcher_server, ready_at: float) -> None:
+    def monitor(launcher_server, ready_at: float, saved: dict) -> None:
         """盯住网页是否还活着：网页关了就把服务和进程一起收掉。"""
         if stopped["value"]:
             return
         live = launcher_server.server
+        roots_now = [str(item) for item in getattr(live.library, "roots", [])]
+        if roots_now and roots_now != saved["roots"]:
+            saved["roots"] = roots_now
+            _save_folders(live.library.roots)
         now = time.monotonic()
         last = getattr(live, "last_activity", ready_at)
         bye_at = getattr(live, "bye_at", None)
         if _should_stop(now, ready_at, last, bye_at):
             stop_app()
             return
-        root.after(1000, monitor, launcher_server, ready_at)
+        root.after(1000, monitor, launcher_server, ready_at, saved)
 
-    _boot(root_path, report, state, lambda: None)
+    _boot(roots, report, state, lambda: None)
     root.after(200, poll)
     root.mainloop()
 
@@ -334,16 +378,22 @@ def run_gui(root_path: Path, initial_open: bool = True) -> None:
 def _run(argv: list[str] | None = None, dialog=None) -> int:
     argv = list(sys.argv if argv is None else argv)
     dialog = dialog or _ask_directory
-    choice = argv[1].strip() if len(argv) > 1 and argv[1].strip() else dialog()
-    if not choice:
-        return 0
+    folders: list[Path] = []
+    if len(argv) > 1 and argv[1].strip():
+        folders = [Path(argv[1].strip())]
+    else:
+        folders = _load_saved_folders()
+        if not folders:
+            choice = dialog()
+            if not choice:
+                return 0
+            folders = [Path(choice)]
 
-    root_path = Path(choice)
-    if not root_path.is_dir():
-        _error_box(f"照片目录不存在：{root_path}")
+    valid = [item for item in folders if item.is_dir()]
+    if not valid:
+        _error_box(f"照片目录不存在：{folders[0]}")
         return 1
-
-    run_gui(root_path)
+    run_gui(valid)
     return 0
 
 

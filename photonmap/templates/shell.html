@@ -71,6 +71,48 @@
   .geo-hit .hint { font-size: 11px; color: #9aa0a6; margin-top: 2px;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* 设置里的文件夹管理 */
+  #folder-list .folder-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
+  #folder-list .folder-row .path { flex: 1; font-size: 11px; color: #c3c9d0;
+                                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #folder-list .folder-row button { flex: none; padding: 2px 8px; font-size: 11px;
+                                    font-family: inherit; background: #1d242b; color: #f0a0a0;
+                                    border: 1px solid #7a3b3b; border-radius: 4px; cursor: pointer; }
+  .folder-actions { display: flex; gap: 6px; padding: 6px 0 2px; }
+  .folder-actions button { padding: 5px 10px; font-size: 12px; font-family: inherit;
+                           background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                           border-radius: 4px; cursor: pointer; }
+  #folder-apply { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
+
+  /* 选文件夹的弹窗 */
+  #browse { position: fixed; inset: 0; z-index: 11000; background: rgba(0, 0, 0, .72);
+            display: flex; align-items: center; justify-content: center; }
+  #browse[hidden] { display: none; }
+  #browse .panel { width: min(560px, 92vw); max-height: 80vh; display: flex;
+                   flex-direction: column; background: #151a20; border: 1px solid #2f3740;
+                   border-radius: 8px; overflow: hidden; }
+  #browse .head { padding: 10px 14px; font-size: 13px; font-weight: 600;
+                  border-bottom: 1px solid #262b31; }
+  .browse-bar { display: flex; gap: 6px; padding: 8px 12px;
+                border-bottom: 1px solid #262b31; }
+  .browse-bar button { padding: 4px 10px; font-size: 13px; font-family: inherit;
+                       background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                       border-radius: 4px; cursor: pointer; }
+  .browse-bar input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px;
+                      font-family: inherit; background: #1d242b; color: #e8eaed;
+                      border: 1px solid #2f3740; border-radius: 4px; }
+  #browse-list { flex: 1; overflow: auto; padding: 6px 8px; min-height: 200px; }
+  .browse-item { padding: 6px 8px; font-size: 12px; color: #e8eaed; cursor: pointer;
+                 border-radius: 4px; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; }
+  .browse-item:hover { background: #1a2028; }
+  #browse .foot { display: flex; justify-content: flex-end; gap: 8px;
+                  padding: 10px 12px; border-top: 1px solid #262b31; }
+  #browse .foot button { padding: 6px 12px; font-size: 12px; font-family: inherit;
+                         background: #1d242b; color: #e8eaed; border: 1px solid #2f3740;
+                         border-radius: 4px; cursor: pointer; }
+  #browse .foot #browse-pick { background: #1d4e86; border-color: #6ea8fe; color: #fff; }
+
   /* 分组行可展开看照片 */
   .group .row { cursor: pointer; }
   .group-photos { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 16px 10px; }
@@ -196,6 +238,14 @@
     <button type="button" id="settings-save">保存并应用</button>
     <div class="hint" id="settings-hint"></div>
     <div class="hint">Google Maps 与高德地图用的是官方公开瓦片，不需要密钥。</div>
+
+    <div class="section">照片文件夹</div>
+    <div id="folder-list"></div>
+    <div class="folder-actions">
+      <button type="button" id="folder-add">添加文件夹</button>
+      <button type="button" id="folder-apply">应用</button>
+    </div>
+    <div class="hint" id="folder-hint">可以添加多个文件夹一起看；应用后页面会重新加载。</div>
   </div>
   <div class="section" id="count">正在载入…</div>
   <div class="section" id="pending-head" hidden>待确认定位 <span id="pending-count">0</span>
@@ -214,6 +264,20 @@
     <button type="button" class="nav prev" title="上一张">‹</button>
     <button type="button" class="nav next" title="下一张">›</button>
     <div class="cap"></div>
+  </div>
+</div>
+<div id="browse" hidden>
+  <div class="panel">
+    <div class="head">选择文件夹</div>
+    <div class="browse-bar">
+      <button type="button" id="browse-up" title="上一级">↑</button>
+      <input id="browse-path" readonly />
+    </div>
+    <div id="browse-list"></div>
+    <div class="foot">
+      <button type="button" id="browse-cancel">取消</button>
+      <button type="button" id="browse-pick">选择当前文件夹</button>
+    </div>
   </div>
 </div>
 <div id="splitter"></div>
@@ -1224,6 +1288,137 @@ document.getElementById('groups-apply').addEventListener('click', async function
     button.disabled = false;
   }
 });
+
+/* ---------------------------------------------------------------- 照片文件夹 */
+
+let FOLDER_ROOTS = [];
+let browseCurrent = '';
+
+async function loadFolders() {
+  try {
+    const res = await fetch('/api/folders', { cache: 'no-store' });
+    const data = await res.json();
+    FOLDER_ROOTS = data.roots || [];
+    renderFolders();
+  } catch (err) {
+    /* 服务暂时不可用，等下次打开设置再说 */
+  }
+}
+
+function renderFolders() {
+  const host = document.getElementById('folder-list');
+  host.innerHTML = '';
+  if (!FOLDER_ROOTS.length) {
+    host.innerHTML = '<div class="hint">还没有照片文件夹</div>';
+    return;
+  }
+  FOLDER_ROOTS.forEach(function (path, index) {
+    const row = document.createElement('div');
+    row.className = 'folder-row';
+    const name = document.createElement('span');
+    name.className = 'path';
+    name.textContent = path;
+    name.title = path;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '移除';
+    remove.addEventListener('click', function () {
+      if (FOLDER_ROOTS.length <= 1) {
+        alert('至少要保留一个文件夹。');
+        return;
+      }
+      FOLDER_ROOTS.splice(index, 1);
+      renderFolders();
+    });
+    row.appendChild(name);
+    row.appendChild(remove);
+    host.appendChild(row);
+  });
+}
+
+document.getElementById('folder-apply').addEventListener('click', async function () {
+  if (!FOLDER_ROOTS.length) {
+    alert('至少要有一个文件夹。');
+    return;
+  }
+  const button = this;
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folders: FOLDER_ROOTS, session: SESSION })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    location.reload();
+  } catch (err) {
+    alert('切换文件夹失败：' + err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+async function browseTo(path) {
+  let data;
+  try {
+    const res = await fetch('/api/browse?path=' + encodeURIComponent(path || ''), {
+      cache: 'no-store'
+    });
+    data = await res.json();
+  } catch (err) {
+    alert('读取目录失败：' + err.message);
+    return;
+  }
+  if (!data.ok) {
+    alert(data.error || '无法读取目录');
+    return;
+  }
+  browseCurrent = data.path || '';
+  document.getElementById('browse-path').value = browseCurrent || '（选择磁盘）';
+  const up = document.getElementById('browse-up');
+  up.disabled = !data.parent;
+  up.dataset.parent = data.parent || '';
+  const list = document.getElementById('browse-list');
+  list.innerHTML = '';
+  const dirs = data.dirs || [];
+  if (!dirs.length) {
+    list.innerHTML = '<div class="hint">没有子文件夹</div>';
+    return;
+  }
+  dirs.forEach(function (dir) {
+    const item = document.createElement('div');
+    item.className = 'browse-item';
+    item.textContent = dir.name;
+    item.title = dir.path;
+    item.addEventListener('click', function () { browseTo(dir.path); });
+    list.appendChild(item);
+  });
+}
+
+document.getElementById('folder-add').addEventListener('click', function () {
+  document.getElementById('browse').hidden = false;
+  browseTo(FOLDER_ROOTS[FOLDER_ROOTS.length - 1] || '');
+});
+
+document.getElementById('browse-up').addEventListener('click', function () {
+  if (this.dataset.parent) browseTo(this.dataset.parent);
+});
+
+document.getElementById('browse-cancel').addEventListener('click', function () {
+  document.getElementById('browse').hidden = true;
+});
+
+document.getElementById('browse-pick').addEventListener('click', function () {
+  if (!browseCurrent) {
+    alert('先进入一个文件夹。');
+    return;
+  }
+  if (FOLDER_ROOTS.indexOf(browseCurrent) === -1) FOLDER_ROOTS.push(browseCurrent);
+  document.getElementById('browse').hidden = true;
+  renderFolders();
+});
+
+loadFolders();
 
 /* ---------------------------------------------------------------- 定位确认 */
 

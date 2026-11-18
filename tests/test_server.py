@@ -1568,3 +1568,84 @@ def test_bye_requires_session(photo_dir, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_library_supports_multiple_roots(tmp_path):
+    """一个库可以同时看多个照片目录，文件夹标签带根目录名。"""
+    first = tmp_path / "album_a"
+    second = tmp_path / "album_b"
+    write_gps_photo(first / "a.jpg", 31.0, 121.0, datetime(2024, 5, 1, 10, 0, 0))
+    write_gps_photo(second / "sub" / "b.jpg", 30.0, 120.0, datetime(2024, 5, 2, 10, 0, 0))
+    write_timed_photo(second / "sub" / "c.jpg", datetime(2024, 5, 2, 10, 30, 0))
+
+    library = PhotoLibrary([first, second], tmp_path / "files")
+    assert library.refresh() is True
+    rows = library.rows()
+    assert sorted(row["name"] for row in rows["photos"]) == ["a.jpg", "b.jpg"]
+    assert [row["name"] for row in rows["pending"]] == ["c.jpg"]
+    folders = {group["folder"] for group in library.groups()}
+    assert "album_a" in folders
+    assert "album_b/sub" in folders  # 目录分隔符按平台
+
+
+def test_folders_api_switches_roots(photo_dir, tmp_path):
+    other = tmp_path / "other"
+    write_gps_photo(other / "x.jpg", 30.0, 120.0, datetime(2024, 6, 1, 9, 0, 0))
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(base + "/api/folders") as res:
+            data = json.loads(res.read().decode("utf-8"))
+        assert data["roots"] == [str(photo_dir)]
+
+        with _post_json(base, "/api/folders", {
+            "session": server.session, "folders": [str(other)],
+        }) as res:
+            payload = json.loads(res.read().decode("utf-8"))
+        assert payload["ok"] is True
+        assert payload["roots"] == [str(other)]
+
+        with urllib.request.urlopen(base + "/api/photos") as res:
+            rows = json.loads(res.read().decode("utf-8"))
+        assert [row["name"] for row in rows["photos"]] == ["x.jpg"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_folders_api_rejects_missing_dir(photo_dir, tmp_path):
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _post_json(base, "/api/folders", {
+                "session": server.session, "folders": [str(tmp_path / "nope")],
+            })
+        assert excinfo.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_browse_lists_subdirectories(photo_dir, tmp_path):
+    (photo_dir / "sub1").mkdir()
+    (photo_dir / "sub2").mkdir()
+    (photo_dir / "file.jpg").write_bytes(b"x")
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        url = base + "/api/browse?path=" + urllib.parse.quote(str(photo_dir))
+        with urllib.request.urlopen(url) as res:
+            data = json.loads(res.read().decode("utf-8"))
+        names = [item["name"] for item in data["dirs"]]
+        assert "sub1" in names and "sub2" in names
+        assert "file.jpg" not in names
+    finally:
+        server.shutdown()
+        server.server_close()

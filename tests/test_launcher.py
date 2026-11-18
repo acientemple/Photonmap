@@ -77,7 +77,9 @@ def test_missing_dir_raises(tmp_path):
         LauncherServer(tmp_path / "nope")
 
 
-def test_main_cancelled_returns_zero():
+def test_main_cancelled_returns_zero(monkeypatch):
+    # 有「上次的文件夹」就不会弹选择框，这里强制当作没有记录
+    monkeypatch.setattr(launcher, "_load_saved_folders", lambda: [])
     assert launcher.main([], dialog=lambda: "") == 0
 
 
@@ -91,9 +93,9 @@ def test_main_reports_missing_dir(monkeypatch):
 
 def test_main_runs_gui(photo_dir, monkeypatch):
     calls = []
-    monkeypatch.setattr(launcher, "run_gui", lambda path: calls.append(path))
+    monkeypatch.setattr(launcher, "run_gui", lambda paths: calls.append(paths))
     assert launcher.main(["PhotonMap.exe", str(photo_dir)]) == 0
-    assert calls == [Path(photo_dir)]
+    assert calls == [[Path(photo_dir)]]
 
 
 def test_boot_reports_ready_server(photo_dir, tmp_path):
@@ -183,3 +185,27 @@ def test_should_stop_when_browser_never_connected():
 def test_should_stop_after_long_idle():
     assert not launcher._should_stop(now=500.0, ready_at=0.0, last_activity=10.0, bye_at=None)
     assert launcher._should_stop(now=1000.0, ready_at=0.0, last_activity=10.0, bye_at=None)
+
+
+def test_saved_folders_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    launcher._save_folders([folder])
+    assert launcher._load_saved_folders() == [folder]
+
+    # 记录里已经不存在的目录会被丢掉
+    gone = tmp_path / "gone"
+    launcher._save_folders([gone])
+    assert launcher._load_saved_folders() == []
+
+
+def test_main_uses_saved_folders(photo_dir, monkeypatch):
+    """没给参数时直接用上次打开的文件夹，不再弹选择框。"""
+    calls = []
+    monkeypatch.setattr(launcher, "_load_saved_folders", lambda: [Path(photo_dir)])
+    monkeypatch.setattr(launcher, "run_gui", lambda paths: calls.append(paths))
+    def boom():
+        raise AssertionError("不应该弹选择框")
+    assert launcher.main([], dialog=boom) == 0
+    assert calls == [[Path(photo_dir)]]
