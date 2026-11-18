@@ -1640,12 +1640,34 @@ def test_browse_lists_subdirectories(photo_dir, tmp_path):
     thread.start()
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        url = base + "/api/browse?path=" + urllib.parse.quote(str(photo_dir))
-        with urllib.request.urlopen(url) as res:
+        with _post_json(base, "/api/browse", {
+            "session": server.session, "path": str(photo_dir),
+        }) as res:
             data = json.loads(res.read().decode("utf-8"))
         names = [item["name"] for item in data["dirs"]]
         assert "sub1" in names and "sub2" in names
         assert "file.jpg" not in names
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_browse_requires_session_and_is_post_only(photo_dir, tmp_path):
+    """目录浏览要 session，而且不再是 GET（避免被当成普通链接/预取）。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _post_json(base, "/api/browse", {"path": str(photo_dir)})
+        assert excinfo.value.code == 409
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(
+                base + "/api/browse?path=" + urllib.parse.quote(str(photo_dir))
+            )
+        assert excinfo.value.code == 404
     finally:
         server.shutdown()
         server.server_close()

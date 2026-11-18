@@ -1361,8 +1361,10 @@ document.getElementById('folder-apply').addEventListener('click', async function
 async function browseTo(path) {
   let data;
   try {
-    const res = await fetch('/api/browse?path=' + encodeURIComponent(path || ''), {
-      cache: 'no-store'
+    const res = await fetch('/api/browse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path || '', session: SESSION })
     });
     data = await res.json();
   } catch (err) {

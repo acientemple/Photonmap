@@ -1066,8 +1066,6 @@ class LiveHandler(BaseHTTPRequestHandler):
                 self._send_json(self._photos_payload(parsed))
             elif path == "/api/folders":
                 self._send_json(self._folders_payload())
-            elif path == "/api/browse":
-                self._send_json(self._browse_payload(parsed))
             elif path == "/api/geocode":
                 self._send_json(self._geocode_payload(parsed))
             elif path == "/api/groups":
@@ -1108,6 +1106,8 @@ class LiveHandler(BaseHTTPRequestHandler):
                 self._handle_bye()
             elif path == "/api/folders":
                 self._handle_folders()
+            elif path == "/api/browse":
+                self._handle_browse()
             else:
                 self.send_error(404, "Not Found")
         except BrokenPipeError:
@@ -1462,9 +1462,9 @@ class LiveHandler(BaseHTTPRequestHandler):
         """当前正在看的照片目录列表。"""
         return {"ok": True, "roots": [str(item) for item in self.server.library.roots]}
 
-    def _browse_payload(self, parsed) -> dict:
+    def _browse_payload(self, payload: dict) -> dict:
         """列目录，给「添加文件夹」用。只列目录，不列文件。"""
-        raw = parse_qs(parsed.query).get("path", [""])[0].strip()
+        raw = str(payload.get("path") or "").strip()
         if not raw:
             if os.name == "nt":
                 drives = []
@@ -1487,6 +1487,16 @@ class LiveHandler(BaseHTTPRequestHandler):
             return {"ok": False, "error": f"无法读取：{exc}"}
         parent = str(target.parent) if target.parent != target else None
         return {"ok": True, "path": str(target), "parent": parent, "dirs": dirs[:500]}
+
+    def _handle_browse(self) -> None:
+        """列目录。要带 session：目录列表不该被任意页面拿到。"""
+        payload = self._read_json()
+        if payload is None:
+            return
+        if payload.get("session") != self.server.session:
+            self.send_error(409, "Stale Session")
+            return
+        self._send_json(self._browse_payload(payload))
 
     def _handle_folders(self) -> None:
         """换一组照片目录（设置里的文件夹管理）。"""

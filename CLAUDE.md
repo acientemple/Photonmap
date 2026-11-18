@@ -166,7 +166,7 @@ photonmap 把带 GPS 信息的照片导出成可在地图上查看的文件（KM
 - **不向不透明 origin 发敏感消息**：iframe 统一用 `postToParent()` 发消息——父窗口就是自己（静态导出直接打开）或页面是 `file://`（origin 为不透明）时**直接不发**，免得坐标/照片 key 落到任意嵌入者手里；静态导出也不响应 `edit-start/move/end`（函数开头 `if (!LIVE) return;`）。
 - **定位会话的坐标基准固定**：打开浮层时把 `overlayEngine` 定死；iframe 回传的 `edit-point` 若带着不同的 `system`（底图中途换层，Google 各层基准不同），用 `PhotoMap.coord.convert()` 换算到会话基准，而不是把同一串数字按新基准重新解释。
 - **页面间消息只认同源**：壳页面与 iframe 的 `message` 监听都先校验 `event.origin === window.location.origin`（壳页面还要求 `event.source === frame.contentWindow`），`postMessage` 的目标 origin 用 `window.location.origin`（静态导出走 `file://` 时退回 `'*'`）。
-- **照片文件夹管理**：侧栏「设置」里可以看当前目录、移除、添加、应用。`GET /api/folders` 返回当前目录列表；`POST /api/folders`（带 session）换一组目录，服务端 `LiveServer.switch_roots()` 就地重建 `PhotoLibrary`（端口、页面都不变，watcher 跟着重启）；`GET /api/browse?path=` 列子目录，给「添加文件夹」当目录浏览器用（只列目录）。`PhotoLibrary` 支持多个根目录（`roots`），索引缓存里也记 `roots`，文件夹标签在多个根时带根目录名前缀。
+- **照片文件夹管理**：侧栏「设置」里可以看当前目录、移除、添加、应用。`GET /api/folders` 返回当前目录列表；`POST /api/folders`（带 session）换一组目录，服务端 `LiveServer.switch_roots()` 就地重建 `PhotoLibrary`（端口、页面都不变，watcher 跟着重启）；`POST /api/browse {path, session}` 列子目录，给「添加文件夹」当目录浏览器用（只列目录、只对 POST 开放，且要 session——目录列表不该被任意页面拿到）。`PhotoLibrary` 支持多个根目录（`roots`），索引缓存里也记 `roots`，文件夹标签在多个根时带根目录名前缀。
 - **`/api/bye`**：页面 `pagehide` 时用 `sendBeacon` 通知，**必须带页面里的 `session` 当 CSRF 令牌**（否则任意站点 POST 一下就能把本地服务关掉）；服务端校验通过才记 `bye_at`，任何后续请求都会清掉它（刷新页面不会误杀），启动器据此停机。
 - **响应按需 gzip**：`_send_bytes()` 只在体积 ≥1KB **且是文本类**（json/html/js/css/svg）时压缩。`/api/photos` 在 4000 张照片时约 2.2MB，压缩后只要 200KB 左右；JPEG/PNG 本身已压过，再压是白烧 CPU。
 - **listen backlog 128**：`LiveServer.request_queue_size`。默认的 5 在页面上千张图同时请求时会直接拒掉新连接（浏览器报 `ERR_CONNECTION_REFUSED`）。
