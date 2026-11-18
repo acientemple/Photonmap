@@ -1002,7 +1002,12 @@ class LiveHandler(BaseHTTPRequestHandler):
         bind_host = (getattr(self.server, "bind_host", "") or "").strip().lower()
         return bool(bind_host) and hostname == bind_host
 
+    def _touch(self) -> None:
+        self.server.last_activity = time.monotonic()
+        self.server.bye_at = None
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定
+        self._touch()
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         if not self._request_allowed():
@@ -1040,6 +1045,7 @@ class LiveHandler(BaseHTTPRequestHandler):
             self.send_error(500, "Internal Server Error")
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定
+        self._touch()
         path = unquote(urlparse(self.path).path)
         if not self._request_allowed():
             self.send_error(403, "Forbidden")
@@ -1055,6 +1061,8 @@ class LiveHandler(BaseHTTPRequestHandler):
                 self._handle_locate_clear()
             elif path == "/api/ai/locate":
                 self._handle_ai_locate()
+            elif path == "/api/bye":
+                self._handle_bye()
             else:
                 self.send_error(404, "Not Found")
         except BrokenPipeError:
@@ -1405,6 +1413,16 @@ class LiveHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_bye(self) -> None:
+        """页面关了（sendBeacon）：给启动器一个关停信号。
+
+        先等几秒看看有没有新请求（刷新页面会重新连上），
+        没等到就由启动器把服务停掉。
+        """
+        self.server.bye_at = time.monotonic()
+        self.send_response(204)
+        self.end_headers()
+
     def _handle_ai_locate(self) -> None:
         """用视觉模型给一张照片猜地名。
 
@@ -1604,6 +1622,9 @@ class LiveServer(ThreadingHTTPServer):
 
     def __init__(self, address, handler, library, assets_dir, shell, full_cache):
         super().__init__(address, handler)
+        # 最近一次请求时间 + 页面关闭信号（启动器靠这两个判断网页还在不在）
+        self.last_activity = time.monotonic()
+        self.bye_at: float | None = None
         self.library = library
         self.assets_dir = Path(assets_dir)
         self.shell = shell

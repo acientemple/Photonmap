@@ -164,3 +164,22 @@ def test_setup_logging_writes_server_log(tmp_path, monkeypatch):
 
     launcher._setup_logging()  # 重复调用不能重复加 handler
     assert sum(1 for h in logger.handlers if getattr(h, "baseFilename", "").endswith("server.log")) == 1
+
+
+def test_should_stop_when_page_says_bye():
+    # 页面关闭信号 + 一段时间没有新请求 → 退出
+    assert launcher._should_stop(now=100.0, ready_at=0.0, last_activity=94.0, bye_at=94.0)
+    # 刚收到关停信号（宽限期内）不退出，给刷新页面留机会
+    assert not launcher._should_stop(now=100.0, ready_at=0.0, last_activity=97.0, bye_at=97.0)
+    # 关停信号之后又有请求（页面刷新了）→ 不退出
+    assert not launcher._should_stop(now=100.0, ready_at=0.0, last_activity=99.0, bye_at=90.0)
+
+
+def test_should_stop_when_browser_never_connected():
+    assert not launcher._should_stop(now=60.0, ready_at=0.0, last_activity=0.0, bye_at=None)
+    assert launcher._should_stop(now=200.0, ready_at=0.0, last_activity=0.0, bye_at=None)
+
+
+def test_should_stop_after_long_idle():
+    assert not launcher._should_stop(now=500.0, ready_at=0.0, last_activity=10.0, bye_at=None)
+    assert launcher._should_stop(now=1000.0, ready_at=0.0, last_activity=10.0, bye_at=None)

@@ -24,6 +24,27 @@ from .server import Watcher, build_server
 
 _LOG_NAME = "launcher.log"
 
+# 页面关闭后的宽限期（刷新页面会立刻重新连上，不能一收到就退）
+BYE_GRACE = 5.0
+# 启动后多久还没等到浏览器连上就放弃（浏览器没打开成功时别留下隐形常驻进程）
+CONNECT_TIMEOUT = 120.0
+# 长时间没有任何请求（比如浏览器崩溃没发关停信号）就自动退出
+IDLE_TIMEOUT = 900.0
+
+
+def _should_stop(
+    now: float,
+    ready_at: float,
+    last_activity: float,
+    bye_at: float | None,
+) -> bool:
+    """启动器是否该退出：页面关了、一直没连上，或长时间没有请求。"""
+    if bye_at is not None and now - bye_at > BYE_GRACE and now - last_activity > BYE_GRACE:
+        return True
+    if last_activity <= ready_at and now - ready_at > CONNECT_TIMEOUT:
+        return True
+    return now - last_activity > IDLE_TIMEOUT
+
 
 def find_free_port(host: str = "127.0.0.1", preferred: int = 8765) -> int:
     """优先用 preferred；被占用就试 preferred+1…+9，最后才让系统随便给一个。
@@ -278,9 +299,12 @@ def run_gui(root_path: Path, initial_open: bool = True) -> None:
         server = state.get("server")
         if server is not None:
             url_var.set(server.url)
-            status_var.set("服务已启动，关闭窗口即停止")
+            status_var.set("服务已启动")
             if initial_open:
                 root.after(300, open_page)
+            # 加载完成就把窗口收起来，只在扫描/出错时出现
+            root.after(300, root.withdraw)
+            root.after(1000, monitor, server, time.monotonic())
             return
         if progress["total"]:
             status_var.set(
@@ -288,6 +312,19 @@ def run_gui(root_path: Path, initial_open: bool = True) -> None:
                 "（首次运行要生成缩略图，照片多时需要较久）"
             )
         root.after(200, poll)
+
+    def monitor(launcher_server, ready_at: float) -> None:
+        """盯住网页是否还活着：网页关了就把服务和进程一起收掉。"""
+        if stopped["value"]:
+            return
+        live = launcher_server.server
+        now = time.monotonic()
+        last = getattr(live, "last_activity", ready_at)
+        bye_at = getattr(live, "bye_at", None)
+        if _should_stop(now, ready_at, last, bye_at):
+            stop_app()
+            return
+        root.after(1000, monitor, launcher_server, ready_at)
 
     _boot(root_path, report, state, lambda: None)
     root.after(200, poll)

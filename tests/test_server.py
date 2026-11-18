@@ -1520,3 +1520,23 @@ def test_loopback_server_rejects_lan_ip_host(photo_dir, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_bye_endpoint_flags_shutdown_and_new_request_clears_it(photo_dir, tmp_path):
+    """页面关闭发 /api/bye；随后又有请求（刷新）就把关停信号清掉。"""
+    server = build_server(photo_dir, TILES, workdir=tmp_path / "work", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(base + "/api/bye", data=b"", method="POST")
+        with urllib.request.urlopen(request) as res:
+            assert res.status == 204
+        assert server.bye_at is not None
+
+        with urllib.request.urlopen(base + "/api/photos") as res:
+            assert res.status == 200
+        assert server.bye_at is None
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -52,7 +52,7 @@ photonmap 把带 GPS 信息的照片导出成可在地图上查看的文件（KM
 
 仓库没有 lint / format 配置，也没有 CI。不要臆造 `ruff`/`black` 命令。
 
-双击版入口（GUI 启动器）：`.venv/Scripts/python.exe -m photonmap.launcher [照片目录]` —— 不给目录就弹选择框，起服务后自动打开浏览器，关窗即停。打包成单文件 exe 用 `.\build_exe.ps1`（PyInstaller + `packaging/photonmap.spec`，产出 `dist/PhotonMap.exe`，无控制台、不含 AI 依赖）。
+双击版入口（GUI 启动器）：`.venv/Scripts/python.exe -m photonmap.launcher [照片目录]` —— 不给目录就弹选择框；扫描期间显示进度窗口，**加载完成后窗口自动隐藏**；页面关闭时会发 `/api/bye`（sendBeacon），启动器等 5 秒确认不是刷新后**自动退出**（关掉网页 = 关掉服务）。另有兜底：浏览器一直没连上 120 秒、或连续 15 分钟没有请求，也会退出。打包成单文件 exe 用 `.\build_exe.ps1`（PyInstaller + `packaging/photonmap.spec`，产出 `dist/PhotonMap.exe`，无控制台、不含 AI 依赖）。
 
 ## 架构
 
@@ -166,6 +166,7 @@ photonmap 把带 GPS 信息的照片导出成可在地图上查看的文件（KM
 - **不向不透明 origin 发敏感消息**：iframe 统一用 `postToParent()` 发消息——父窗口就是自己（静态导出直接打开）或页面是 `file://`（origin 为不透明）时**直接不发**，免得坐标/照片 key 落到任意嵌入者手里；静态导出也不响应 `edit-start/move/end`（函数开头 `if (!LIVE) return;`）。
 - **定位会话的坐标基准固定**：打开浮层时把 `overlayEngine` 定死；iframe 回传的 `edit-point` 若带着不同的 `system`（底图中途换层，Google 各层基准不同），用 `PhotoMap.coord.convert()` 换算到会话基准，而不是把同一串数字按新基准重新解释。
 - **页面间消息只认同源**：壳页面与 iframe 的 `message` 监听都先校验 `event.origin === window.location.origin`（壳页面还要求 `event.source === frame.contentWindow`），`postMessage` 的目标 origin 用 `window.location.origin`（静态导出走 `file://` 时退回 `'*'`）。
+- **`/api/bye`**：页面 `pagehide` 时用 `sendBeacon` 通知，服务端记一个 `bye_at`；任何后续请求都会清掉它（刷新页面不会误杀），启动器据此停机。
 - **响应按需 gzip**：`_send_bytes()` 只在体积 ≥1KB **且是文本类**（json/html/js/css/svg）时压缩。`/api/photos` 在 4000 张照片时约 2.2MB，压缩后只要 200KB 左右；JPEG/PNG 本身已压过，再压是白烧 CPU。
 - **listen backlog 128**：`LiveServer.request_queue_size`。默认的 5 在页面上千张图同时请求时会直接拒掉新连接（浏览器报 `ERR_CONNECTION_REFUSED`）。
 - **分组结果按版本缓存**：`groups()` 里 `build_groups`+`infer` 在几千张照片时要好几秒，版本号没变就直接复用（副本返回，外部改动不影响缓存）。

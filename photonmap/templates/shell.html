@@ -1886,6 +1886,13 @@ async function poll() {
 buildTabs();
 frame.src = engineSrc(currentEngine);
 poll();
+
+/* 页面关闭 / 跳走时通知本地服务，启动器据此退出（刷新会立刻重连，不会误杀） */
+window.addEventListener('pagehide', function () {
+  try {
+    if (navigator.sendBeacon) navigator.sendBeacon('/api/bye');
+  } catch (e) {}
+});
 </script>
 </body>
 </html>
